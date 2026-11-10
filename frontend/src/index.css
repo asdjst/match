@@ -1,0 +1,194 @@
+/*
+ * 少量自定义 CSS：只做 Astryx 未覆盖的布局栅格与 React Flow 定制。
+ * 颜色/圆角/阴影一律引用 Astryx token（var(--color-*|--radius-*)），深浅色自动跟随。
+ */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+}
+
+.page-fill {
+  flex: 1;
+  min-height: 0;
+}
+
+.page-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ———— ChatPage：单栏消息流（引用证据内嵌，窄屏不再隐藏） ———— */
+.chat-column {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  min-height: 0;
+}
+
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.chat-composer {
+  flex: none;
+  margin: 0 var(--spacing-4) var(--spacing-4);
+}
+
+/* 断言列表 */
+.assertion-list {
+  margin: 0;
+  padding-left: var(--spacing-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+/* [E1] 引用 chip：可点击，态样式走 token */
+.cite-chip {
+  appearance: none;
+  border: 1px solid var(--color-border-info);
+  color: var(--color-text-info);
+  background: var(--color-info-muted);
+  border-radius: var(--radius-inner);
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  font-weight: 600;
+  padding: 0 var(--spacing-1);
+  margin-left: var(--spacing-1);
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.cite-chip:hover {
+  box-shadow: var(--shadow-low);
+}
+
+.cite-chip--active {
+  outline: 2px solid var(--color-border-info);
+  outline-offset: 1px;
+  background: var(--color-info);
+  color: var(--color-on-info);
+}
+
+/* 推断标记 */
+.inferred-tag {
+  margin-left: var(--spacing-2);
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-warning);
+  border: 1px dashed var(--color-border-warning);
+  border-radius: var(--radius-inner);
+  padding: 0 var(--spacing-1);
+}
+
+/* ———— TracePage：顶部运行选择 + 可滚动详情流 ———— */
+.trace-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.trace-toolbar {
+  flex: none;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+}
+
+.trace-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.dag-canvas {
+  position: relative;
+  flex: none;
+  height: 280px;
+  min-height: 240px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-surface);
+  overflow: hidden;
+}
+
+/* 选中节点后画布加高，产出面板浮在网格上 */
+.dag-canvas.has-detail {
+  height: 500px;
+}
+
+.dag-hint {
+  position: absolute;
+  top: var(--spacing-2);
+  left: var(--spacing-3);
+  z-index: 4;
+  pointer-events: none;
+}
+
+.dag-detail {
+  position: absolute;
+  top: var(--spacing-3);
+  right: var(--spacing-3);
+  bottom: var(--spacing-3);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100% - var(--spacing-6)));
+  background: var(--color-background-card);
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-container);
+  box-shadow: var(--shadow-high);
+  overflow: hidden;
+}
+
+.dag-detail-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  padding: var(--spacing-1) var(--spacing-2) var(--spacing-1) var(--spacing-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+}
+
+.dag-detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--spacing-3);
+}
+
+/* React Flow 控件/小地图跟随主题 */
+.react-flow__controls {
+  box-shadow: var(--shadow-med) !important;
+}
+
+.react-flow__controls-button {
+  background: var(--color-background-card) !important;
+  border-bottom: 1px solid var(--color-border) !important;
+  fill: var(--color-text-primary) !important;
+}
+
+.react-flow__edge-textbg {
+  fill: var(--color-background-card);
+}
+
+.react-flow__edge-text {
+  fill: var(--color-text-secondary);
+}
+
+/* 边流动动画（@xyflow animated 自带 dash 流动，这里只校准颜色已由内联样式控制） */

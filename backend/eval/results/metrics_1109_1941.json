@@ -1,0 +1,195 @@
+{
+  "retrieval": {
+    "n": 44,
+    "recall_at_5": 0.9545,
+    "mrr": 0.848,
+    "per_type": {
+      "事实": "26/26",
+      "图像": "5/5",
+      "音频": "3/5",
+      "对比": "5/5",
+      "计算": "3/3"
+    }
+  },
+  "pipeline": {
+    "n": 23,
+    "citation_accuracy": 0.5833,
+    "no_source_rate": 0.0,
+    "answer_score": 1.0,
+    "offtopic_refusal": "2/3"
+  },
+  "ablation": {
+    "n": 20,
+    "direct": {
+      "answer_score": 0.075,
+      "avg_latency_s": 7.5
+    },
+    "rag": {
+      "answer_score": 1.0,
+      "avg_latency_s": 27.0
+    }
+  },
+  "per_question": [
+    {
+      "qid": "F01",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 21.6
+    },
+    {
+      "qid": "F02",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 19.6
+    },
+    {
+      "qid": "F03",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 29.0
+    },
+    {
+      "qid": "F04",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 33.0
+    },
+    {
+      "qid": "F05",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 22.1
+    },
+    {
+      "qid": "F06",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 48.0
+    },
+    {
+      "qid": "F07",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 18.5
+    },
+    {
+      "qid": "F08",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 15.4
+    },
+    {
+      "qid": "F09",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 26.8
+    },
+    {
+      "qid": "F10",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 14.4
+    },
+    {
+      "qid": "F11",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 41.6
+    },
+    {
+      "qid": "F12",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 16.9
+    },
+    {
+      "qid": "F13",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 32.0
+    },
+    {
+      "qid": "F14",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 24.5
+    },
+    {
+      "qid": "F15",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 21.5
+    },
+    {
+      "qid": "F16",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 12.3
+    },
+    {
+      "qid": "F17",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 41.7
+    },
+    {
+      "qid": "F18",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 33.8
+    },
+    {
+      "qid": "F19",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 29.1
+    },
+    {
+      "qid": "F20",
+      "qtype": "事实",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 38.6
+    },
+    {
+      "qid": "X01",
+      "qtype": "库外",
+      "refused": true,
+      "confidence": 0.0,
+      "latency_s": 25.1
+    },
+    {
+      "qid": "X02",
+      "qtype": "库外",
+      "refused": true,
+      "confidence": 0.0,
+      "latency_s": 36.4
+    },
+    {
+      "qid": "X03",
+      "qtype": "库外",
+      "refused": false,
+      "confidence": 0.702,
+      "latency_s": 38.6
+    }
+  ]
+}

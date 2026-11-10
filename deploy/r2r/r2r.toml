@@ -1,0 +1,45 @@
+# R2R 服务端配置：embedding 走本地 infinity（bge-small-zh），关掉富化/图创建，auth 关闭仅限本地演示
+[completion]
+provider = "litellm"
+concurrent_request_limit = 8
+
+[completion.generation_config]
+model = "openai/gemini-3.8-flash"
+temperature = 0.3
+
+[ingestion]
+provider = "r2r"
+chunking_strategy = "recursive"
+chunk_size = 512
+chunk_overlap = 128
+
+[ingestion.chunk_enrichment_settings]
+enable_chunk_enrichment = false
+
+[embedding]
+provider = "litellm"
+base_model = "openai/BAAI/bge-small-zh-v1.5"
+# nan 是 R2R 官方对自定义 embedding 端点的用法：向量列不定维、调 litellm 时不下发
+# dimensions 参数（该版本 litellm 对 openai 兼容端点下发 dimensions 会直接报错）
+base_dimension = nan
+batch_size = 64
+
+[completion_embedding]
+provider = "litellm"
+base_model = "openai/BAAI/bge-small-zh-v1.5"
+base_dimension = nan
+batch_size = 64
+
+[database]
+provider = "postgres"
+user = "postgres"
+password = "postgres"
+host = "postgres"
+port = "5432"
+db_name = "postgres"
+project_name = "multi_agent_rag"
+
+[auth]
+provider = "r2r"
+require_authentication = false
+secret_key = "demo-secret-change-me"

@@ -1,0 +1,64 @@
+# R2R 检索栈：postgres(pgvector) + infinity(本地中文 embedding) + r2r
+# 镜像版本 pin：R2R_IMAGE 写在 deploy/.env（W0 确认后不得随意升级）
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    command: postgres -c max_connections=1024
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  embeddings:
+    image: michaelf34/infinity:0.0.80
+    command: ["v2", "--model-id", "BAAI/bge-small-zh-v1.5", "--port", "7997", "--host", "0.0.0.0"]
+    ports:
+      - "7997:7997"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:7997/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 300s
+
+  r2r:
+    image: ${R2R_IMAGE:?请在 deploy/.env 设置 R2R_IMAGE=sciphiai/r2r:3.6.6}
+    ports:
+      # 3.6.6 应用监听容器内 8000（非老版本的 7272），宿主机统一暴露 7272
+      - "7272:8000"
+    environment:
+      R2R_CONFIG_PATH: /app/user_configs/r2r.toml
+      R2R_POSTGRES_USER: postgres
+      R2R_POSTGRES_PASSWORD: postgres
+      R2R_POSTGRES_HOST: postgres
+      R2R_POSTGRES_PORT: "5432"
+      R2R_POSTGRES_DBNAME: postgres
+      # OPENAI_* 只用于 embedding（openai/BAAI/bge-small-zh-v1.5 → 本地 infinity）；
+      # 注意 infinity 0.0.80 的路由是 /embeddings（无 /v1 前缀），litellm 会在 base 后拼 /embeddings
+      OPENAI_API_KEY: local-embeddings
+      OPENAI_API_BASE: http://embeddings:7997
+      # litellm 会把 base_dimension 作为 dimensions 参数下发，infinity 不收；直接丢弃
+      LITELLM_DROP_PARAMS: "true"
+    volumes:
+      - ./r2r/r2r.toml:/app/user_configs/r2r.toml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v3/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
+
+volumes:
+  pgdata:
