@@ -30,6 +30,27 @@ curl -N -X POST localhost:8000/api/chat -H 'content-type: application/json' \
 
 live 模式 key 在 `backend/.env`（gitignored）：`MRAG_FAST_*` / `MRAG_STRONG_*` / `MRAG_R2R_*`。
 
+## 个人配置清单
+
+只列需要你本人填的 key。后端只读 `backend/.env`（[config.py:21](backend/infra/config.py#L21) 定位、[:31](backend/infra/config.py#L31) 加 `MRAG_` 前缀）；`deploy/.env` 仅给 compose 用。
+
+| Key | 位置（模板行号） | 何时必填 | 说明 |
+|---|---|---|---|
+| `MRAG_FAST_MODEL` / `MRAG_FAST_BASE_URL` / `MRAG_FAST_API_KEY` | `backend/.env` · `.env.example:6-8` | live **必须** | 快档模型与网关；MODEL/API_KEY 缺失时 [:128](backend/infra/config.py#L128) 启动报错 |
+| `MRAG_STRONG_MODEL` / `MRAG_STRONG_BASE_URL` / `MRAG_STRONG_API_KEY` | `backend/.env` · `.env.example:9-11` | live **必须** | 强档模型与网关 |
+| `MRAG_R2R_API_KEY` | `backend/.env` · `.env.example:19` | 可选 | 本机 docker 栈未鉴权时留空 |
+| `MRAG_GDRIVE_CLIENT_ID` / `CLIENT_SECRET` / `REFRESH_TOKEN` | `backend/.env` · `.env.example:31-33` | 云端网盘三选一 | OAuth 方式，可读私有网盘 |
+| `MRAG_GDRIVE_SERVICE_ACCOUNT_JSON` | `backend/.env` · `.env.example:35` | 云端网盘三选一 | JSON 路径或整段；SA 无配额，须把文件夹共享给 `client_email` |
+| `MRAG_GDRIVE_API_KEY` | `backend/.env` · `.env.example:37` | 云端网盘三选一 | 仅公开共享文件 |
+| `MRAG_GDRIVE_FOLDER_ID` | `backend/.env` · `.env.example:39` | 可选 | 限定只检索某个 Drive 文件夹 |
+| `MRAG_WEB_SEARCH_PROXY` | `backend/.env` · `.env.example:27` | 出网需代理时 | 例 `http://127.0.0.1:7890`；不填则多引擎轮换直连 |
+| `MRAG_GDRIVE_PROXY` | `backend/.env` · `.env.example:42` | 同上 | Google 域名直连不通时填 |
+| `MRAG_LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | `backend/.env` · `.env.example:48-49` | 可选 | 两把都填才启用埋点 |
+| `MRAG_FUNASR_URL` | `backend/.env` · `.env.example:53` | 可选 | 不填则 m4a/wav 走本地转写 JSON |
+| `R2R_IMAGE` | `deploy/.env` · `.env.example:5` | compose **必须** | 镜像版本 pin，如 `sciphiai/r2r:3.6.6` |
+
+非密钥类本机配置：前端代理目标 `BACKEND_ORIGIN`（[vite.config.ts:5](frontend/vite.config.ts#L5)，默认 `http://localhost:8000`）、无后端演示 `VITE_MOCK=1`（[runs.tsx:101](frontend/src/store/runs.tsx#L101)）。
+
 ## API
 
 | 端点 | 说明 |
