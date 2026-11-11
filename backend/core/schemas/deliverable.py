@@ -20,5 +20,6 @@ class Deliverable(BaseModel):
     confidence_source: Literal["llm", "formula"] = "formula"
     confidence_reason: str | None = None
     degraded: bool = False
+    degraded_reason: str | None = Field(default=None, description="降级原因，如预算耗尽")
     refused: bool = False
     refusal_reason: str | None = None

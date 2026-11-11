@@ -22,7 +22,7 @@ class FakeHttp:
         self.download_text = download_text
         self.calls: list[tuple[str, dict]] = []
 
-    def get(self, url: str, params: dict | None = None) -> FakeResponse:
+    def get(self, url: str, params: dict | None = None, headers: dict | None = None) -> FakeResponse:
         self.calls.append((url, params or {}))
         if url == GDriveRetriever.SEARCH_URL:
             return FakeResponse(payload={"files": self.files})
@@ -88,7 +88,7 @@ def test_search_request_carries_key_and_fulltext_query():
 def test_unsupported_mime_skipped():
     http = FakeHttp(
         [
-            {"id": "pdf-1", "name": "扫描件", "mimeType": "application/pdf"},
+            {"id": "zip-1", "name": "压缩包", "mimeType": "application/zip"},
             {"id": "doc-2", "name": "说明", "mimeType": "application/vnd.google-apps.document"},
         ]
     )
@@ -96,6 +96,6 @@ def test_unsupported_mime_skipped():
 
     hits = r.recall("营收")
 
-    # PDF 不支持 → 跳过；只有 Google Docs 生成 Evidence
+    # 不支持的 MIME（压缩包）→ 跳过；只有 Google Docs 生成 Evidence
     assert [h.doc_id for h in hits] == ["drive:doc-2"]
-    assert not any("pdf-1" in url for url, _ in http.calls)
+    assert not any("zip-1" in url for url, _ in http.calls)

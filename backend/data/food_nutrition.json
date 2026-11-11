@@ -1,0 +1,30 @@
+{
+  "note": "演示用示例库：碳水参考中国食物成分表常见值，GI 参考国际 GI 数据库常见值；正式使用需按权威表复核。",
+  "foods": [
+    {"name": "米饭", "carbs_per_100g": 25.9, "gi": 83},
+    {"name": "杂粮饭", "carbs_per_100g": 25.5, "gi": 54},
+    {"name": "糙米饭", "carbs_per_100g": 23.0, "gi": 55},
+    {"name": "馒头", "carbs_per_100g": 47.0, "gi": 88},
+    {"name": "全麦馒头", "carbs_per_100g": 45.0, "gi": 69},
+    {"name": "面条", "carbs_per_100g": 24.3, "gi": 82},
+    {"name": "荞麦面", "carbs_per_100g": 24.3, "gi": 59},
+    {"name": "玉米", "carbs_per_100g": 22.8, "gi": 55},
+    {"name": "山药", "carbs_per_100g": 12.4, "gi": 51},
+    {"name": "白粥", "carbs_per_100g": 9.9, "gi": 78},
+    {"name": "燕麦片", "carbs_per_100g": 66.9, "gi": 55},
+    {"name": "全麦面包", "carbs_per_100g": 43.0, "gi": 69},
+    {"name": "土豆", "carbs_per_100g": 17.2, "gi": 66},
+    {"name": "红薯", "carbs_per_100g": 20.1, "gi": 77},
+    {"name": "西兰花", "carbs_per_100g": 4.3, "gi": 15},
+    {"name": "口蘑", "carbs_per_100g": 3.3, "gi": 15},
+    {"name": "香菇", "carbs_per_100g": 5.2, "gi": 15},
+    {"name": "鸡胸肉", "carbs_per_100g": 0.6, "gi": 0},
+    {"name": "鲈鱼", "carbs_per_100g": 0.0, "gi": 0},
+    {"name": "清蒸鲈鱼", "carbs_per_100g": 0.0, "gi": 0},
+    {"name": "鸡蛋", "carbs_per_100g": 1.1, "gi": 0},
+    {"name": "牛奶", "carbs_per_100g": 3.4, "gi": 27},
+    {"name": "苹果", "carbs_per_100g": 13.5, "gi": 36},
+    {"name": "香蕉", "carbs_per_100g": 22.0, "gi": 52},
+    {"name": "豆腐", "carbs_per_100g": 4.2, "gi": 15}
+  ]
+}

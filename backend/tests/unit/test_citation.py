@@ -8,7 +8,7 @@ def _ev(doc_id, score, quote="q"):
 
 
 def test_renumber_orders_by_score_desc():
-    evs = [_ev("a", 1.0), _ev("b", 3.0), _ev("c", 2.0)]
+    evs = [_ev("a", 0.5), _ev("b", 0.9), _ev("c", 0.8)]
     pool = renumber(evs)
     # 编号按 score 降序：E1 最高分
     assert list(pool) == ["E1", "E2", "E3"]
@@ -49,8 +49,8 @@ def test_validate_assertions_missing_cite():
 
 def test_attach_citations_dedup_and_order():
     pool = {
-        "E1": Evidence(doc_id="d1", quote="q1", score=3.0, evidence_id="E1"),
-        "E2": Evidence(doc_id="d2", quote="q2", score=2.0, evidence_id="E2"),
+        "E1": Evidence(doc_id="d1", quote="q1", score=0.9, evidence_id="E1"),
+        "E2": Evidence(doc_id="d2", quote="q2", score=0.8, evidence_id="E2"),
     }
     assertions = [
         Assertion(text="a", cites=["E2", "E1"]),

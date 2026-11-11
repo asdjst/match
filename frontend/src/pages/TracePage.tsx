@@ -4,9 +4,10 @@
  * 详情栏按角色展示该阶段产出：规划→任务图、检索→检索词与取证、计算→工具入参出参、
  * 分析→断言、审校→结论与问题、交付→置信度与最终断言。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Badge,
+  Banner,
   Button,
   Card,
   EmptyState,
@@ -26,6 +27,7 @@ import { EvidenceCard } from "../components/EvidenceCard";
 import {
   CHANNEL_LABELS,
   NODE_LABELS,
+  type AgentResult,
   type Assertion,
   type Channel,
   type Evidence,
@@ -35,14 +37,17 @@ import { useRuns, type RunState } from "../store/runs";
 import { useUi } from "../store/ui";
 
 const DEMO_TRACES = [
-  "2024年公司营业收入是多少？",
-  "2024年和2023年的毛利率相比怎么样？顺带预测2025年毛利率走势。",
+  "一碗米饭大概多少碳水？",
+  "米饭和馒头的升糖负荷哪个更高？",
 ];
 
-const CHANNEL_BADGE: Record<Channel, { variant: "neutral" | "info" | "success"; label: string }> = {
+const CHANNEL_BADGE: Record<Channel, { variant: "neutral" | "info" | "success" | "warning"; label: string }> = {
   local: { variant: "neutral", label: CHANNEL_LABELS.local },
   web: { variant: "info", label: CHANNEL_LABELS.web },
   cloud: { variant: "success", label: CHANNEL_LABELS.cloud },
+  image: { variant: "info", label: CHANNEL_LABELS.image },
+  tool: { variant: "success", label: CHANNEL_LABELS.tool },
+  memory: { variant: "warning", label: CHANNEL_LABELS.memory },
 };
 
 const PHASE_META = {
@@ -72,7 +77,14 @@ function statusMeta(status: string): { variant: "success" | "neutral" | "warning
 }
 
 function channelCounts(pool: Record<string, Evidence> | null | undefined): Record<Channel, number> {
-  const counts: Record<Channel, number> = { local: 0, web: 0, cloud: 0 };
+  const counts: Record<Channel, number> = {
+    local: 0,
+    web: 0,
+    cloud: 0,
+    image: 0,
+    tool: 0,
+    memory: 0,
+  };
   for (const ev of Object.values(pool ?? {})) {
     if (ev.channel && ev.channel in counts) counts[ev.channel] += 1;
   }
@@ -177,13 +189,51 @@ const RETRIEVAL_COLUMNS: TableColumn<RetrievalRow>[] = [
   },
 ];
 
+/** MCP 工具调用流水：node_results[*].output.calls（后端真实入参/出参） */
+interface McpCall {
+  tool: string;
+  args?: Record<string, unknown>;
+  ok?: boolean;
+  result?: unknown;
+  unit?: string | null;
+  gi?: number | null;
+  source?: string | null;
+  error?: string | null;
+  evidence_id?: string | null;
+}
+
+function mcpCalls(result?: AgentResult): McpCall[] {
+  const raw = result?.output?.calls;
+  return Array.isArray(raw) ? (raw as McpCall[]) : [];
+}
+
+function formatArgs(args?: Record<string, unknown>): string {
+  if (!args) return "—";
+  return Object.entries(args)
+    .map(([k, v]) => `${k}=${String(v)}`)
+    .join("，");
+}
+
+function formatCallResult(call: McpCall): string {
+  if (call.ok === false) return call.error ?? "调用失败";
+  if (typeof call.result === "number") return `${call.result}${call.unit ? ` ${call.unit}` : ""}`;
+  if (call.result && typeof call.result === "object") {
+    const r = call.result as { carbs_per_100g?: number; gi?: number };
+    return `碳水 ${r.carbs_per_100g}g/100g · GI ${r.gi}`;
+  }
+  return "—";
+}
+
 function RunOverview({ run }: { run: RunState }) {
   const counts = channelCounts(run.evidencePool);
-  const totalEvidence = counts.local + counts.web + counts.cloud;
+  const totalEvidence = Object.values(counts).reduce((sum, n) => sum + n, 0);
   const d = run.deliverable;
+  const assertions = d?.assertions ?? [];
+  const citedAssertions = assertions.filter((a) => a.cites.length > 0).length;
   const totalMs = (run.finishedAt ?? Date.now()) - run.startedAt;
   const hasSideEvents = run.nodeEvents.length > 0;
   const phase = PHASE_META[run.phase];
+  const verdict = run.verdict;
 
   return (
     <Card padding={4}>
@@ -191,26 +241,83 @@ function RunOverview({ run }: { run: RunState }) {
         <Stack direction="horizontal" gap={2} vAlign="center" wrap="wrap">
           <Badge variant={phase.variant} label={phase.label} />
           {run.source === "mock" ? <Badge variant="neutral" label="Mock" /> : null}
+          {verdict ? (
+            <Badge
+              variant={verdict.verdict === "pass" ? "success" : "warning"}
+              label={
+                verdict.verdict === "pass"
+                  ? `审校通过 · 第 ${verdict.round_no} 轮`
+                  : `审校打回 → ${verdict.send_back_to ?? "上游"} · 第 ${verdict.round_no} 轮`
+              }
+            />
+          ) : null}
+          {run.guard ? (
+            <Badge
+              variant={run.guard.allowed ? "neutral" : "error"}
+              label={run.guard.allowed ? "安全红线未触发" : "输入已拦截"}
+            />
+          ) : null}
           <Text size="2xs" color="secondary">
             {run.runId ?? "run_id 未就绪"}
           </Text>
         </Stack>
         <Heading level={3}>{run.question}</Heading>
-        <MetadataList orientation="horizontal">
-          <MetadataListItem label="总耗时">
-            {hasSideEvents ? `${(totalMs / 1000).toFixed(1)}s` : "—"}
-          </MetadataListItem>
-          <MetadataListItem label="审校轮次">
-            {run.roundNo != null ? `第 ${run.roundNo} 轮` : "—"}
-          </MetadataListItem>
-          <MetadataListItem label="证据池">{totalEvidence} 条</MetadataListItem>
-          <MetadataListItem label="交付引用">{d?.citations.length ?? 0} 条</MetadataListItem>
-          <MetadataListItem label="置信度">
-            {d
-              ? `${Math.round(d.confidence * 100)}%${d.confidence_source === "llm" ? " · 模型评分" : d.confidence_source === "formula" ? " · 公式兜底" : ""}`
-              : "—"}
-          </MetadataListItem>
-        </MetadataList>
+        <div className="stat-strip">
+          {hasSideEvents ? (
+            <div className="stat">
+              <span>总耗时</span>
+              <b>
+                {(totalMs / 1000).toFixed(1)}
+                <small> 秒</small>
+              </b>
+            </div>
+          ) : null}
+          <div className="stat">
+            <span>证据池</span>
+            <b>
+              {totalEvidence}
+              <small> 条</small>
+            </b>
+          </div>
+          <div className="stat">
+            <span>断言</span>
+            <b>
+              {assertions.length > 0 ? assertions.length : "—"}
+              {assertions.length > 0 ? <small> 条 · 带引用 {citedAssertions}</small> : null}
+            </b>
+          </div>
+          <div className="stat">
+            <span>交付引用</span>
+            <b>
+              {d?.citations.length ?? 0}
+              <small> 条</small>
+            </b>
+          </div>
+          <div className="stat">
+            <span>置信度</span>
+            <b>
+              {d ? `${Math.round(d.confidence * 100)}` : "—"}
+              {d ? <small>%</small> : null}
+            </b>
+            {d?.confidence_source ? (
+              <small className="stat-unit">
+                {d.confidence_source === "llm" ? "模型评分" : "公式兜底"}
+              </small>
+            ) : null}
+          </div>
+        </div>
+        <Stack direction="horizontal" gap={2} vAlign="center" wrap="wrap">
+          <Text size="2xs" color="secondary">
+            证据分渠道
+          </Text>
+          {(Object.keys(CHANNEL_BADGE) as Channel[]).map((ch) => (
+            <Badge
+              key={ch}
+              variant={CHANNEL_BADGE[ch].variant}
+              label={`${CHANNEL_BADGE[ch].label} ${counts[ch]}`}
+            />
+          ))}
+        </Stack>
       </Stack>
     </Card>
   );
@@ -219,26 +326,17 @@ function RunOverview({ run }: { run: RunState }) {
 function RetrievalPanel({ run }: { run: RunState }) {
   const rows = buildRetrievalRows(run);
   const counts = channelCounts(run.evidencePool);
-  const totalEvidence = counts.local + counts.web + counts.cloud;
+  const totalEvidence = Object.values(counts).reduce((sum, n) => sum + n, 0);
 
   return (
     <Card padding={4}>
       <Stack gap={3}>
         <Stack direction="horizontal" gap={3} vAlign="start" hAlign="between" wrap="wrap">
           <Stack gap={1}>
-            <Text weight="semibold">三通道检索</Text>
+            <Text weight="semibold">多通道取证</Text>
             <Text size="2xs" color="secondary">
-              本地 R2R · Web（DuckDuckGo）· 云端网盘（Google Drive）并行取证，逐节点记录命中、耗时与状态
+              本地 R2R · Web（DuckDuckGo）· 云端网盘（Google Drive）三路并行检索；拍照识别与 MCP 工具结果一并入池
             </Text>
-          </Stack>
-          <Stack direction="horizontal" gap={2} vAlign="center" wrap="wrap">
-            {(Object.keys(CHANNEL_BADGE) as Channel[]).map((ch) => (
-              <Badge
-                key={ch}
-                variant={CHANNEL_BADGE[ch].variant}
-                label={`${CHANNEL_BADGE[ch].label} ${counts[ch]}`}
-              />
-            ))}
           </Stack>
         </Stack>
 
@@ -253,7 +351,9 @@ function RetrievalPanel({ run }: { run: RunState }) {
           />
         ) : (
           <Text size="sm" color="secondary">
-            本问还没有检索记录。
+            {totalEvidence > 0
+              ? "本问未走本地/Web/云盘检索，证据来自拍照识别或 MCP 工具。"
+              : "本问还没有检索记录。"}
           </Text>
         )}
 
@@ -384,6 +484,7 @@ function StageSection({ run, node }: { run: RunState; node: GraphNodeName }) {
     case "executor": {
       const specs = dagNodes.filter((n) => n.role === "executor");
       const results = resultsForGraphNode("executor", run.nodeResults, run.dag);
+      const calls = results.flatMap((r) => mcpCalls(r));
       if (specs.length === 0 && results.length === 0) {
         return (
           <Text size="sm" color="secondary">
@@ -396,36 +497,73 @@ function StageSection({ run, node }: { run: RunState; node: GraphNodeName }) {
           <Text size="sm" weight="semibold" color="secondary">
             工具调用情况
           </Text>
-          {specs.map((spec, i) => {
-            const r = results[i];
-            const out = r?.output as
-              | { args?: { a?: number; b?: number }; result?: number; unit?: string }
-              | null
-              | undefined;
-            return (
-              <Stack key={spec.node_id} gap={1}>
-                <Text size="sm" color="secondary">
-                  工具：{spec.tool ?? "—"}
+          {calls.length > 0 ? (
+            <Card padding={3}>
+              <Stack gap={2}>
+                <Text size="sm" weight="semibold" color="secondary">
+                  MCP 调用流水（{calls.length} 次）
                 </Text>
-                {out?.args ? (
-                  <Text size="sm" color="secondary" hasTabularNumbers>
-                    入参：a={out.args.a}，b={out.args.b}
-                  </Text>
-                ) : null}
-                {out?.result != null ? (
-                  <Text size="sm" color="secondary" hasTabularNumbers>
-                    结果：{out.result}
-                    {out.unit ?? ""}
-                  </Text>
-                ) : null}
-                {r?.block_reason ? (
-                  <Text size="sm" color="secondary">
-                    阻塞：{r.block_reason}
-                  </Text>
-                ) : null}
+                {calls.map((c, i) => (
+                  <div className="audit-call" key={`${c.tool}-${i}`}>
+                    <div className="audit-head">
+                      <span className="audit-tool">{c.tool}</span>
+                      <span className={`audit-ok${c.ok === false ? " is-fail" : ""}`}>
+                        {c.ok === false ? "调用失败" : "调用成功"}
+                      </span>
+                    </div>
+                    <div className="audit-tiles">
+                      <div className="audit-tile">
+                        <span>输入参数</span>
+                        <strong className="mono">{formatArgs(c.args)}</strong>
+                      </div>
+                      <div className="audit-tile">
+                        <span>返回结果</span>
+                        <strong className="mono">{formatCallResult(c)}</strong>
+                      </div>
+                      <div className="audit-tile">
+                        <span>证据引用</span>
+                        <strong>{c.evidence_id ?? "—"}</strong>
+                        {c.source ? <small>{c.source}</small> : null}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </Stack>
-            );
-          })}
+            </Card>
+          ) : null}
+          {/* 有真实调用流水时不再重复列工具名；无流水（如增长率计算）保留规划侧信息 */}
+          {calls.length === 0
+            ? specs.map((spec, i) => {
+                const r = results[i];
+                const out = r?.output as
+                  | { args?: { a?: number; b?: number }; result?: number; unit?: string }
+                  | null
+                  | undefined;
+                return (
+                  <Stack key={spec.node_id} gap={1}>
+                    <Text size="sm" color="secondary">
+                      工具：{spec.tool ?? "—"}
+                    </Text>
+                    {out?.args ? (
+                      <Text size="sm" color="secondary" hasTabularNumbers>
+                        入参：a={out.args.a}，b={out.args.b}
+                      </Text>
+                    ) : null}
+                    {out?.result != null ? (
+                      <Text size="sm" color="secondary" hasTabularNumbers>
+                        结果：{out.result}
+                        {out.unit ?? ""}
+                      </Text>
+                    ) : null}
+                    {r?.block_reason ? (
+                      <Text size="sm" color="secondary">
+                        阻塞：{r.block_reason}
+                      </Text>
+                    ) : null}
+                  </Stack>
+                );
+              })
+            : null}
           {!hasDag && results.length > 0
             ? results.map((r) => (
                 <Stack key={r.node_id} gap={1}>
@@ -459,14 +597,57 @@ function StageSection({ run, node }: { run: RunState; node: GraphNodeName }) {
           </Text>
         );
       }
+      const assertions = run.deliverable?.assertions ?? [];
+      const pool = run.evidencePool ?? {};
+      const cited = assertions.filter((a) => a.cites.length > 0).length;
+      const missing = [
+        ...new Set(assertions.flatMap((a) => a.cites).filter((c) => !(c in pool))),
+      ];
       return (
-        <Stack gap={1}>
+        <Stack gap={2}>
           <Text size="sm" weight="semibold" color="secondary">
             审校产出
           </Text>
           <Text size="sm" color="secondary">
             结论：{v.verdict === "pass" ? "通过" : `打回 → ${v.send_back_to ?? "上游"}`}
           </Text>
+          <Stack gap={1}>
+            <Stack direction="horizontal" gap={2} vAlign="center" wrap="wrap">
+              <Badge
+                variant={missing.length === 0 ? "success" : "error"}
+                label={missing.length === 0 ? "引用编号全部存在" : `${missing.length} 个引用不在证据池`}
+              />
+              <Text size="2xs" color="secondary">
+                {missing.length > 0 ? missing.join("、") : ""}
+              </Text>
+            </Stack>
+            <Stack direction="horizontal" gap={2} vAlign="center" wrap="wrap">
+              <Badge
+                variant={
+                  assertions.length === 0
+                    ? "neutral"
+                    : cited === assertions.length
+                      ? "success"
+                      : "warning"
+                }
+                label={
+                  assertions.length === 0
+                    ? "无可核断言"
+                    : `断言带引用 ${cited}/${assertions.length}`
+                }
+              />
+            </Stack>
+            {run.guard ? (
+              <Badge
+                variant={run.guard.allowed ? "success" : "error"}
+                label={
+                  run.guard.allowed ? "安全红线检查通过" : `安全红线拦截：${run.guard.reason ?? "见会话页"}`
+                }
+              />
+            ) : (
+              <Badge variant="neutral" label="安全红线本问未触发" />
+            )}
+          </Stack>
           {v.issues.map((iss, i) => (
             <Text key={i} size="sm" color="secondary">
               · {iss}
@@ -502,6 +683,11 @@ function StageSection({ run, node }: { run: RunState; node: GraphNodeName }) {
           {d.refusal_reason ? (
             <Text size="sm" color="secondary">
               说明：{d.refusal_reason}
+            </Text>
+          ) : null}
+          {d.degraded_reason ? (
+            <Text size="sm" color="secondary">
+              降级原因：{d.degraded_reason}
             </Text>
           ) : null}
           {d.assertions.length > 0 ? (
@@ -607,28 +793,11 @@ export default function TracePage() {
     setActiveRunKey,
     startRun,
     transportKind,
-    history,
-    reloadHistory,
-    restoreRun,
+    approveRun,
   } = useRuns();
   const { setPage } = useUi();
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [activeEvidenceId, setActiveEvidenceId] = useState<string | null>(null);
-
-  // 新 run 完成/阶段变化时刷新持久化历史（SQLite）
-  const phaseSig = useMemo(() => runs.map((r) => `${r.runId}:${r.phase}`).join(","), [runs]);
-  useEffect(() => {
-    if (transportKind === "live") void reloadHistory();
-  }, [phaseSig, transportKind, reloadHistory]);
-
-  const loadedRunIds = useMemo(
-    () => new Set(runs.map((r) => r.runId).filter((id): id is string => Boolean(id))),
-    [runs],
-  );
-  const historyItems = useMemo(
-    () => history.filter((h) => !loadedRunIds.has(h.run_id)),
-    [history, loadedRunIds],
-  );
 
   const run = useMemo<RunState | null>(() => {
     if (runs.length === 0) return null;
@@ -647,63 +816,55 @@ export default function TracePage() {
   const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
   const runOptions = useMemo(
-    () => [
-      ...runs.map((r) => ({
+    () =>
+      runs.map((r) => ({
         value: r.key,
         label: `${truncate(r.question, 26)}${r.phase === "streaming" ? " · 执行中" : ""}`,
       })),
-      ...historyItems.map((h) => ({
-        value: `h:${h.run_id}`,
-        label: `↺ ${truncate(h.question, 22)} · ${h.created_at.slice(5, 16).replace("T", " ")}`,
-      })),
-    ],
-    [runs, historyItems],
+    [runs],
   );
 
   const handlePickRun = useCallback(
     (value: string) => {
-      if (value.startsWith("h:")) {
-        void restoreRun(value.slice(2));
-        return;
-      }
       setActiveRunKey(value);
       setSelectedNode(null);
       setActiveEvidenceId(null);
     },
-    [restoreRun, setActiveRunKey],
+    [setActiveRunKey],
   );
 
   if (!run) {
     return (
-      <div className="page-fill page-center">
-        <EmptyState
-          title="暂无轨迹"
-          description="先在会话页提问生成运行轨迹，或直接加载一条演示轨迹。"
-          actions={
-            <Stack direction="horizontal" gap={2} wrap="wrap">
-              <Button label="去会话页提问" variant="primary" onClick={() => setPage("chat")} />
-              {transportKind === "mock"
-                ? DEMO_TRACES.map((q) => (
-                    <Button
-                      key={q}
-                      label={`演示：${q.slice(0, 12)}…`}
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => startRun(q)}
-                    />
-                  ))
-                : history.slice(0, 6).map((h) => (
-                    <Button
-                      key={h.run_id}
-                      label={`回放：${h.question.slice(0, 12)}${h.question.length > 12 ? "…" : ""}`}
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void restoreRun(h.run_id)}
-                    />
-                  ))}
-            </Stack>
-          }
-        />
+      <div className="page-fill trace-page">
+        <div className="trace-toolbar">
+          <Stack direction="horizontal" gap={3} vAlign="center" wrap="wrap" padding={3}>
+            <Text size="2xs" color="secondary">
+              从左侧会话历史打开一段对话，再点消息里的「查看轨迹」；工具入参、证据来源和审校结论都会保留。
+            </Text>
+          </Stack>
+        </div>
+        <div className="trace-scroll page-center">
+          <EmptyState
+            title="暂无轨迹"
+            description="先在控糖工作台跑一次评估，或从左侧会话历史打开一段旧对话。"
+            actions={
+              <Stack direction="horizontal" gap={2} wrap="wrap">
+                <Button label="去工作台提问" variant="primary" onClick={() => setPage("chat")} />
+                {transportKind === "mock"
+                  ? DEMO_TRACES.map((q) => (
+                      <Button
+                        key={q}
+                        label={`演示：${q.slice(0, 12)}…`}
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => startRun(q)}
+                      />
+                    ))
+                  : null}
+              </Stack>
+            }
+          />
+        </div>
       </div>
     );
   }
@@ -722,7 +883,7 @@ export default function TracePage() {
             onChange={handlePickRun}
           />
           <Text size="2xs" color="secondary">
-            本次会话 {runs.length} 条 · 已落库 {history.length} 条
+            当前已加载 {runs.length} 条运行
           </Text>
         </Stack>
       </div>
@@ -730,6 +891,23 @@ export default function TracePage() {
       <div className="trace-scroll">
         <Stack gap={4} padding={4} maxWidth={1360} style={{ margin: "0 auto", width: "100%" }}>
           <RunOverview run={run} />
+          {run.phase === "interrupted" ? (
+            <Banner
+              status="warning"
+              title="流程在人工断点暂停"
+              description="审校连续打回且轮数用尽，图挂在 Writer 前。放行后输出兜底结论并标注降级。"
+              endContent={
+                <Button
+                  label="放行并交付"
+                  variant="primary"
+                  size="sm"
+                  isLoading={run.approving}
+                  isDisabled={run.approving}
+                  onClick={() => void approveRun(run.key)}
+                />
+              }
+            />
+          ) : null}
           <FlowDag
             run={run}
             selectedNode={selectedNode}

@@ -15,8 +15,7 @@ class FakeLLM:
         from core.services.confidence import LLMConfidence
 
         if schema is TaskDAG:
-            question = prompt.task.split("QUESTION:", 1)[-1].strip()
-            return _plan(question)
+            return _plan(prompt.task)
         if schema is ReviewVerdict or schema is CriticOutput:
             return CriticOutput()
         if schema is AnalystOutput:
@@ -29,8 +28,12 @@ class FakeLLM:
         return TextOut(text=prompt.task)
 
 
-def _plan(question: str) -> TaskDAG:
-    if _CALC_RE.search(question):
+def _plan(task: str) -> TaskDAG:
+    question = task.split("QUESTION:", 1)[-1].strip()
+    if "【已识别的餐食" in task:
+        # 餐食数据已在证据池，离线演示不需要再检索财报语料
+        nodes = [NodeSpec(node_id="a1", role="analyst", instruction="依据餐食识别证据估算碳水，保留区间")]
+    elif _CALC_RE.search(question):
         nodes = [
             NodeSpec(node_id="r1", role="retriever", query=question),
             NodeSpec(

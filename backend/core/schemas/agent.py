@@ -16,7 +16,7 @@ class AgentResult(BaseModel):
 class ReviewVerdict(BaseModel):
     verdict: Literal["pass", "send_back"]
     issues: list[str] = Field(default_factory=list)
-    send_back_to: Optional[Literal["planner", "retriever"]] = None
+    send_back_to: Optional[Literal["planner", "retriever", "analyst"]] = None
     round_no: int = 0
 
 
@@ -25,7 +25,7 @@ class CriticOutput(BaseModel):
 
     verdict: Literal["pass", "send_back"] = "pass"
     issues: list[str] = Field(default_factory=list)
-    send_back_to: Optional[Literal["planner", "retriever"]] = None
+    send_back_to: Optional[Literal["planner", "retriever", "analyst"]] = None
 
 
 class AnalystOutput(BaseModel):

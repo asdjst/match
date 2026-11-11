@@ -34,5 +34,26 @@ class TaskDAG(BaseModel):
     def by_role(self, role: str) -> list[NodeSpec]:
         return [n for n in self.nodes if n.role == role]
 
+    def order(self) -> list[NodeSpec]:
+        """按 depends_on 做拓扑排序；依赖成环或引用未知节点时退回声明顺序。"""
+        by_id = {n.node_id: n for n in self.nodes}
+        indeg = {n.node_id: 0 for n in self.nodes}
+        children: dict[str, list[str]] = {n.node_id: [] for n in self.nodes}
+        for n in self.nodes:
+            for dep in n.depends_on:
+                if dep in by_id and dep != n.node_id:
+                    indeg[n.node_id] += 1
+                    children[dep].append(n.node_id)
+        ready = [n.node_id for n in self.nodes if indeg[n.node_id] == 0]
+        out: list[NodeSpec] = []
+        while ready:
+            nid = ready.pop(0)
+            out.append(by_id[nid])
+            for child in children[nid]:
+                indeg[child] -= 1
+                if indeg[child] == 0:
+                    ready.append(child)
+        return out if len(out) == len(self.nodes) else list(self.nodes)
+
     def max_rounds(self) -> int:
         return self.nodes[0].budget.max_rounds if self.nodes else 3

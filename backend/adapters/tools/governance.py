@@ -35,6 +35,8 @@ NUMERIC_TOOL_SCHEMAS: dict[str, dict[str, str]] = {
     "slow_sum": {"a": "number", "b": "number", "delay_s": "number?"},
     "sum": {"values": "number[]"},
     "avg": {"values": "number[]"},
+    "query_food_nutrition": {"name": "string"},
+    "calculate_gl": {"name": "string", "carbs_g": "number"},
 }
 
 
@@ -74,6 +76,9 @@ def validate_args(name: str, args: Any) -> str | None:
                 return f"参数 {key} 必须为非空数值列表"
             if not all(_is_number(x) for x in val):
                 return f"参数 {key} 必须全为数值"
+        elif kind == "string":
+            if not isinstance(val, str) or not val.strip():
+                return f"参数 {key} 必须为非空字符串"
         elif not _is_number(val):
             return f"参数 {key} 必须为数值"
     return None

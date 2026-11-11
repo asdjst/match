@@ -5,7 +5,8 @@ from core.schemas.prompt import PromptBundle, TextOut
 from infra.config import TierConfig
 
 _TIER_TEMPERATURE = {"planner": 0.2, "critic": 0.0, "retriever": 0.3, "executor": 0.0, "analyst": 0.6, "writer": 0.6}
-_MAX_TOKENS = 4096
+# 快档只做规划/审校/评分这类短 JSON，给 2k 足够；强档分析要留推理预算
+_MAX_TOKENS = {"fast": 2048, "strong": 8192}
 
 
 class LiteLLMRouter:
@@ -34,9 +35,10 @@ class LiteLLMRouter:
             "messages": [{"role": "system", "content": prompt.system}, {"role": "user", "content": user}],
             "temperature": _TIER_TEMPERATURE.get(prompt.role, 0.3),
             # 强档是推理型模型（deepseek-v4.1-flash），max_tokens 太小会把预算全耗在推理上返回空
-            "max_tokens": _MAX_TOKENS,
+            "max_tokens": _MAX_TOKENS.get(tier, 4096),
             # 网关瞬时抖动（连接错误/429/5xx）由 litellm 原生退避重试兜底
             "num_retries": 3,
+            "timeout": 90,
         }
         if cfg.api_base:
             kwargs["api_base"] = cfg.api_base
@@ -44,5 +46,8 @@ class LiteLLMRouter:
             kwargs["api_key"] = cfg.api_key
         if cfg.extra_headers:
             kwargs["extra_headers"] = cfg.extra_headers
+        if cfg.extra_body:
+            # litellm 会把 extra_body 合并进发给兼容端点的 JSON，用于关思考模式等开关
+            kwargs["extra_body"] = cfg.extra_body
         resp = completion(**kwargs)
         return resp.choices[0].message.content or ""

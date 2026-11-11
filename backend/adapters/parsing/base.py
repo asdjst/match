@@ -2,16 +2,24 @@ from pathlib import Path
 
 from adapters.parsing.audio_parsing import FunASRParser, TranscriptParser
 from adapters.parsing.image_parsing import VlmImageParser
+from adapters.parsing.markdown_parsing import MarkdownParser
 from adapters.parsing.pdf_parsing import PdfParser
 from core.schemas.ingest import Passage
 from infra.config import Settings
 
-_SUFFIX_MODALITY = {".pdf": "text", ".png": "image", ".jpg": "image", ".jpeg": "image", ".json": "audio"}
+_SUFFIX_MODALITY = {
+    ".pdf": "text",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".json": "audio",
+    ".md": "text",
+}
 
 
 def get_parser(path: Path, settings: Settings):
     """按后缀选解析器；图片用 fast 档 VLM，转写 JSON 走兜底通道，
-    配了 MRAG_FUNASR_URL 的 .wav/.m4a 走 FunASR。"""
+    配了 MRAG_FUNASR_URL 的 .wav/.m4a 走 FunASR；.md 是本地知识卡。"""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         return PdfParser()
@@ -21,6 +29,8 @@ def get_parser(path: Path, settings: Settings):
         return FunASRParser(settings.funasr_url)
     if suffix == ".json":
         return TranscriptParser()
+    if suffix == ".md":
+        return MarkdownParser()
     raise ValueError(f"暂不支持的文件类型：{path.name}")
 
 

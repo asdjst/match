@@ -14,9 +14,9 @@ def test_demo_corpus_shapes():
 def test_min_score_filters_weak_hits():
     r = FakeRetriever()
     hits = r.recall("公司2024年营业收入是多少？")
-    # 低于 min_score=2 的弱相关（如仅命中"收入"的录音）不回
+    # 低于 min_score=2 的弱相关（如仅命中"收入"的录音）不回；输出分统一到 0-1
     assert hits
-    assert all(h.score >= 2.0 for h in hits)
+    assert all(0 < h.score <= 1 for h in hits)
     assert all(h.doc_id != "earnings_call" for h in hits)
     assert len(hits) <= 5  # top_k 截断
 

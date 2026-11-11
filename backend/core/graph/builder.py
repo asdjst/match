@@ -1,9 +1,9 @@
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from core.graph.nodes.critic import make_critic
 from core.graph.nodes.roles import (
     make_analyst,
-    make_critic,
     make_executor,
     make_planner,
     make_retriever,
@@ -27,7 +27,11 @@ def build_graph(llm, retriever_port, tools, checkpointer: BaseCheckpointSaver | 
     g.add_conditional_edges("retriever", _after_retriever, {"executor": "executor", "analyst": "analyst"})
     g.add_edge("executor", "analyst")
     g.add_edge("analyst", "critic")
-    g.add_conditional_edges("critic", _after_critic, {"retriever": "retriever", "writer": "writer"})
+    g.add_conditional_edges(
+        "critic",
+        _after_critic,
+        {"planner": "planner", "retriever": "retriever", "analyst": "analyst", "writer": "writer"},
+    )
     g.add_edge("writer", END)
     return g.compile(checkpointer=checkpointer)
 
@@ -42,6 +46,7 @@ def _after_critic(state: dict) -> str:
     if verdict.get("verdict") == "pass":
         return "writer"
     dag = TaskDAG(**state["dag"])
-    if state.get("round_no", 0) < dag.max_rounds():
-        return "retriever"
-    return "writer"
+    if state.get("round_no", 0) >= dag.max_rounds():
+        return "writer"
+    target = verdict.get("send_back_to")
+    return target if target in {"planner", "retriever", "analyst"} else "retriever"

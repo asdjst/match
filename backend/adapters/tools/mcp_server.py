@@ -21,6 +21,11 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
+try:  # 作为脚本启动时 sys.path 只含本目录
+    from adapters.tools.food_data import SOURCE, gl_estimate, lookup
+except ModuleNotFoundError:
+    from food_data import SOURCE, gl_estimate, lookup
+
 mcp = FastMCP("mrag-tools", instructions="多智能体 RAG 系统的本地数据计算工具集")
 
 
@@ -57,6 +62,29 @@ def _avg(values: list[float]) -> dict:
     if not values:
         return {"ok": False, "error": "values 不能为空"}
     return {"ok": True, "result": round(sum(values) / len(values), 6), "unit": "same_as_input"}
+
+
+@mcp.tool()
+def query_food_nutrition(name: str) -> dict:
+    """按食物名查每 100g 碳水与 GI；未收录返回失败，不编造数值。"""
+    item = lookup(name)
+    if item is None:
+        return {"ok": False, "error": f"食物库未收录：{name}"}
+    return {
+        "ok": True,
+        "result": {"name": item["name"], "carbs_per_100g": item["carbs_per_100g"], "gi": item["gi"]},
+        "unit": "g/100g",
+        "source": SOURCE,
+    }
+
+
+@mcp.tool()
+def calculate_gl(name: str, carbs_g: float) -> dict:
+    """血糖负荷 GL = GI × 碳水(g) / 100；只做营养估算，不构成医疗建议。"""
+    out = gl_estimate(name, carbs_g)
+    if out is None:
+        return {"ok": False, "error": f"无法计算：食物未收录或碳水为负（{name}）"}
+    return {"ok": True, "result": out["gl"], "unit": "GL", "gi": out["gi"], "carbs_g": out["carbs_g"], "source": out["source"]}
 
 
 @mcp.tool()

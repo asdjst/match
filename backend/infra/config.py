@@ -48,6 +48,8 @@ class TierConfig:
     api_base: str = ""
     api_key: str = ""
     extra_headers: dict = field(default_factory=dict)
+    # 透传给 OpenAI 兼容端点的额外请求体，如关闭思考模式 {"thinking":{"type":"disabled"}}
+    extra_body: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -66,6 +68,9 @@ class Settings:
     web_search: bool = True
     web_search_top_k: int = 3
     web_search_proxy: str = ""
+    web_search_timeout_s: float = 3.0
+    web_provider: str = "ddgs"          # ddgs | bocha | tavily
+    web_api_key: str = ""
     gdrive_api_key: str = ""
     gdrive_folder_id: str = ""
     gdrive_client_id: str = ""
@@ -74,9 +79,13 @@ class Settings:
     gdrive_service_account_json: str = ""
     gdrive_proxy: str = ""
     gdrive_top_k: int = 3
-    retrieval_timeout_s: float = 20.0
+    # 整轮检索硬上限：本地库通常 <1s，联网失败最多等这么久，不能让用户陪跑
+    retrieval_timeout_s: float = 8.0
     db_path: str = ""
+    upload_dir: str = ""
     funasr_url: str = ""
+    # 逗号分隔的白名单；默认只放本机开发端口，部署时显式改成前端域名
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -90,12 +99,14 @@ class Settings:
                 api_base=_env("FAST_BASE_URL"),
                 api_key=_env("FAST_API_KEY"),
                 extra_headers=_json_env("FAST_EXTRA_HEADERS"),
+                extra_body=_json_env("FAST_EXTRA_BODY"),
             ),
             strong=TierConfig(
                 model=_env("STRONG_MODEL", "openai/gpt-4o"),
                 api_base=_env("STRONG_BASE_URL"),
                 api_key=_env("STRONG_API_KEY"),
                 extra_headers=_json_env("STRONG_EXTRA_HEADERS"),
+                extra_body=_json_env("STRONG_EXTRA_BODY"),
             ),
             langfuse_public_key=_env("LANGFUSE_PUBLIC_KEY"),
             langfuse_secret_key=_env("LANGFUSE_SECRET_KEY"),
@@ -105,6 +116,9 @@ class Settings:
             web_search=_env("WEB_SEARCH", "1") not in ("0", "false", "off"),
             web_search_top_k=int(_env("WEB_SEARCH_TOP_K", "3")),
             web_search_proxy=_env("WEB_SEARCH_PROXY"),
+            web_search_timeout_s=float(_env("WEB_SEARCH_TIMEOUT_S", "3")),
+            web_provider=_env("WEB_PROVIDER", "ddgs").strip().lower() or "ddgs",
+            web_api_key=_env("WEB_API_KEY").strip(),
             gdrive_api_key=_env("GDRIVE_API_KEY"),
             gdrive_folder_id=_env("GDRIVE_FOLDER_ID"),
             gdrive_client_id=_env("GDRIVE_CLIENT_ID"),
@@ -113,9 +127,11 @@ class Settings:
             gdrive_service_account_json=_env("GDRIVE_SERVICE_ACCOUNT_JSON"),
             gdrive_proxy=_env("GDRIVE_PROXY"),
             gdrive_top_k=int(_env("GDRIVE_TOP_K", "3")),
-            retrieval_timeout_s=float(_env("RETRIEVAL_TIMEOUT_S", "20")),
+            retrieval_timeout_s=float(_env("RETRIEVAL_TIMEOUT_S", "8")),
             db_path=_env("DB_PATH"),
+            upload_dir=_env("UPLOAD_DIR"),
             funasr_url=_env("FUNASR_URL"),
+            cors_origins=_env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"),
         )
 
     def require_live(self) -> None:

@@ -17,8 +17,10 @@ import type {
   DagPlan,
   Deliverable,
   Evidence,
+  FoodContext,
   RunSummary,
   SseEvent,
+  TaskSnapshot,
 } from "../types";
 import { liveTransport, listRuns, probeBackend } from "../api/client";
 import { mockTransport } from "../api/mock";
@@ -54,21 +56,39 @@ export interface RunState {
   approved: boolean;
   approving: boolean;
   source: "mock" | "live";
+  /** 本条提问附带的餐食识别结果（发送后仍保留，供消息里回看） */
+  food?: FoodContext;
   startedAt: number;
   finishedAt: number | null;
+}
+
+/** 一次会话：同一 session_id 下的多轮问答，左侧历史按它归组 */
+export interface Conversation {
+  id: string;
+  /** 第一句话作为标题 */
+  title: string;
+  count: number;
+  updatedAt: number;
+  /** 该会话里已落库的 run id（时间正序），用于点开时回放 */
+  runIds: string[];
 }
 
 interface RunsContextValue {
   runs: RunState[];
   activeRunKey: string | null;
   setActiveRunKey: (key: string | null) => void;
-  startRun: (question: string) => void;
+  /** 当前会话 id：同一会话内的追问共享它，后端据此回填多轮上下文 */
+  activeSessionId: string;
+  conversations: Conversation[];
+  /** 开一段新对话（不删除旧会话，旧会话仍在历史里） */
+  newConversation: () => void;
+  /** 打开左侧历史里的会话：切到该 session 并补齐未加载的 run */
+  openConversation: (conversation: Conversation) => Promise<void>;
+  startRun: (question: string, food?: FoodContext) => void;
   approveRun: (key: string) => Promise<void>;
   /** SQLite 持久化的历史运行（重启后仍可回放） */
   history: RunSummary[];
   reloadHistory: () => Promise<void>;
-  /** 从后端快照恢复一条历史 run 到轨迹页 */
-  restoreRun: (runId: string) => Promise<void>;
   transportKind: "mock" | "live" | "probing";
 }
 
@@ -76,6 +96,9 @@ const RunsContext = createContext<RunsContextValue | null>(null);
 
 let seq = 0;
 const nextKey = () => `run-${++seq}`;
+
+let sessionSeq = 0;
+const newSessionId = () => `ui-${Date.now()}-${++sessionSeq}`;
 
 export function RunsProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<RunState[]>([]);
@@ -86,7 +109,10 @@ export function RunsProvider({ children }: { children: ReactNode }) {
   );
   const transportRef = useRef<ChatTransport>(mockTransport);
   const abortRef = useRef<AbortController | null>(null);
-  const sessionSeq = useRef(0);
+  // 会话 id 既要给 React 渲染（侧栏高亮），也要给 startRun 的同步闭包读
+  const initialSession = useMemo(() => newSessionId(), []);
+  const [activeSessionId, setActiveSessionId] = useState(initialSession);
+  const activeSessionRef = useRef(initialSession);
 
   // finalize 的异步补拉需要一个绕过闭包的出口：注册模块级 patcher
   useEffect(() => {
@@ -123,9 +149,10 @@ export function RunsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startRun = useCallback(
-    (question: string) => {
+    (question: string, food?: FoodContext) => {
       const key = nextKey();
-      const sessionId = `ui-${Date.now()}-${++sessionSeq.current}`;
+      // 同一会话复用 session_id，后端才能取到最近几轮问答做指代消解
+      const sessionId = activeSessionRef.current;
       const run: RunState = {
         key,
         runId: null,
@@ -144,6 +171,7 @@ export function RunsProvider({ children }: { children: ReactNode }) {
         approved: false,
         approving: false,
         source: transportRef.current.kind,
+        food,
         startedAt: Date.now(),
         finishedAt: null,
       };
@@ -156,26 +184,33 @@ export function RunsProvider({ children }: { children: ReactNode }) {
 
       void (async () => {
         let lastAt = Date.now();
+        let runId: string | null = null;
+        let snapshotSeq = 0;
+        let appliedSeq = 0;
+        const syncSnapshot = (id: string) => {
+          const seq = ++snapshotSeq;
+          void transport.getTask(id).then((snap) => {
+            // 快照按节点事件并发补拉，慢的旧响应不能覆盖新状态
+            if (!snap || seq < appliedSeq) return;
+            appliedSeq = seq;
+            patchRun(key, (r) => ({
+              ...r,
+              nodeResults: snap.node_results ?? r.nodeResults,
+              dag: snap.dag ?? r.dag,
+              evidencePool: snap.evidence ?? r.evidencePool,
+              verdict: snap.verdict ?? r.verdict,
+              roundNo: snap.round_no ?? r.roundNo,
+            }));
+          });
+        };
         try {
-          for await (const ev of transport.stream(question, sessionId, ctrl.signal)) {
+          for await (const ev of transport.stream(question, sessionId, ctrl.signal, food)) {
             const now = Date.now();
             patchRun(key, (r) => reduceEvent(r, ev, now, () => now - lastAt));
             lastAt = now;
-            if (ev.type === "run") {
-              // live 模式：拿到 run_id 后立即拉快照拿 node_results（mock 则等 done）
-              void transport.getTask(ev.run_id).then((snap) => {
-                if (snap) {
-                  patchRun(key, (r) => ({
-                    ...r,
-                    runId: r.runId ?? ev.run_id,
-                    nodeResults: snap.node_results ?? r.nodeResults,
-                    dag: snap.dag ?? r.dag,
-                    evidencePool: snap.evidence ?? r.evidencePool,
-                    roundNo: snap.round_no ?? r.roundNo,
-                  }));
-                }
-              });
-            }
+            if (ev.type === "run") runId = ev.run_id;
+            // 每个角色跑完补拉一次快照：思考过程要显示这一步产出了什么
+            if (ev.type === "node" && runId) syncSnapshot(runId);
           }
           patchRun(key, (r) => finalize(r, transport));
         } catch (err) {
@@ -229,56 +264,149 @@ export function RunsProvider({ children }: { children: ReactNode }) {
     setHistory(await listRuns());
   }, []);
 
-  const restoreRun = useCallback(
-    async (runId: string) => {
-      const existing = runs.find((r) => r.runId === runId);
-      if (existing) {
-        setActiveRunKey(existing.key);
-        return;
+  // 一轮跑完就刷新历史，左侧会话栏不用等切页
+  const phaseSig = useMemo(() => runs.map((r) => `${r.runId}:${r.phase}`).join(","), [runs]);
+  useEffect(() => {
+    if (transportKind === "live") void reloadHistory();
+  }, [phaseSig, transportKind, reloadHistory]);
+
+  /** 后端快照 → 可回放的 RunState */
+  const adoptSnapshot = useCallback((runId: string, snap: TaskSnapshot, sessionId: string): RunState => {
+    const items = snap.food_items ?? [];
+    const created = Date.parse(snap.created_at ?? "");
+    const startedAt = Number.isNaN(created) ? Date.now() : created;
+    return {
+      key: nextKey(),
+      runId,
+      question: snap.question ?? "",
+      sessionId: sessionId || snap.session_id || "",
+      phase: snap.pending_human ? "interrupted" : "done",
+      guard: null,
+      error: null,
+      deliverable: snap.deliverable,
+      nodeEvents: [],
+      nodeResults: snap.node_results,
+      dag: snap.dag,
+      evidencePool: snap.evidence,
+      verdict: snap.verdict,
+      roundNo: snap.round_no,
+      approved: false,
+      approving: false,
+      source: "live",
+      food:
+        items.length > 0
+          ? {
+              image_id: snap.image_id ?? "",
+              food_items: items,
+              photo_url: snap.image_id ? `/api/food/images/${snap.image_id}` : null,
+            }
+          : undefined,
+      startedAt,
+      finishedAt: startedAt,
+    };
+  }, []);
+
+  const newConversation = useCallback(() => {
+    const sid = newSessionId();
+    activeSessionRef.current = sid;
+    setActiveSessionId(sid);
+    setActiveRunKey(null);
+  }, []);
+
+  const openConversation = useCallback(
+    async (conversation: Conversation) => {
+      activeSessionRef.current = conversation.id;
+      setActiveSessionId(conversation.id);
+      const loaded = new Set(runs.map((r) => r.runId).filter((id): id is string => Boolean(id)));
+      const added: RunState[] = [];
+      for (const runId of conversation.runIds) {
+        if (loaded.has(runId)) continue;
+        const snap = await transportRef.current.getTask(runId);
+        if (snap) added.push(adoptSnapshot(runId, snap, conversation.id));
       }
-      const snap = await transportRef.current.getTask(runId);
-      if (!snap) return;
-      const key = nextKey();
-      const run: RunState = {
-        key,
-        runId,
-        question: snap.question ?? "",
-        sessionId: "",
-        phase: snap.pending_human ? "interrupted" : "done",
-        guard: null,
-        error: null,
-        deliverable: snap.deliverable,
-        nodeEvents: [],
-        nodeResults: snap.node_results,
-        dag: snap.dag,
-        evidencePool: snap.evidence,
-        verdict: snap.verdict,
-        roundNo: snap.round_no,
-        approved: false,
-        approving: false,
-        source: snap.deliverable ? "live" : "mock",
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
-      };
-      setRuns((prev) => [...prev, run]);
-      setActiveRunKey(key);
+      if (added.length) setRuns((prev) => [...prev, ...added]);
+      const lastAdded = added[added.length - 1];
+      if (lastAdded) {
+        setActiveRunKey(lastAdded.key);
+      } else {
+        const lastRunId = conversation.runIds[conversation.runIds.length - 1];
+        const existing = runs.find((r) => r.runId === lastRunId);
+        if (existing) setActiveRunKey(existing.key);
+      }
     },
-    [runs],
+    [runs, adoptSnapshot],
   );
+
+  // 会话列表：内存中的 run 与 SQLite 历史合并，按 session_id 归组、按 run_id 去重
+  const conversations = useMemo<Conversation[]>(() => {
+    type Entry = { question: string; at: number; runId: string | null };
+    const groups = new Map<string, Entry[]>();
+    const seen = new Set<string>();
+    const push = (id: string, entry: Entry) => {
+      const list = groups.get(id) ?? [];
+      list.push(entry);
+      groups.set(id, list);
+    };
+    for (const run of runs) {
+      push(run.sessionId || `run:${run.runId ?? run.key}`, {
+        question: run.question,
+        at: run.startedAt,
+        runId: run.runId,
+      });
+      if (run.runId) seen.add(run.runId);
+    }
+    for (const item of history) {
+      if (seen.has(item.run_id)) continue;
+      const at = Date.parse(item.created_at);
+      push(item.session_id || `run:${item.run_id}`, {
+        question: item.question,
+        at: Number.isNaN(at) ? 0 : at,
+        runId: item.run_id,
+      });
+    }
+    return [...groups.entries()]
+      .map(([id, entries]) => {
+        const ordered = [...entries].sort((a, b) => a.at - b.at);
+        const runIds = [...new Set(ordered.map((e) => e.runId).filter((v): v is string => Boolean(v)))];
+        return {
+          id,
+          title: ordered[0].question,
+          count: ordered.length,
+          updatedAt: ordered[ordered.length - 1].at,
+          runIds,
+        };
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [runs, history]);
 
   const value = useMemo<RunsContextValue>(
     () => ({
       runs,
       activeRunKey,
       setActiveRunKey,
+      activeSessionId,
+      conversations,
+      newConversation,
+      openConversation,
       startRun,
       approveRun,
       history,
       reloadHistory,
-      restoreRun,
       transportKind,
     }),
-    [runs, activeRunKey, startRun, approveRun, history, reloadHistory, restoreRun, transportKind],
+    [
+      runs,
+      activeRunKey,
+      activeSessionId,
+      conversations,
+      newConversation,
+      openConversation,
+      startRun,
+      approveRun,
+      history,
+      reloadHistory,
+      transportKind,
+    ],
   );
 
   return <RunsContext.Provider value={value}>{children}</RunsContext.Provider>;

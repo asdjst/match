@@ -2,7 +2,7 @@
  * TracePage DAG：React Flow 画六角色流水线，每个节点内直接给出该阶段产出摘要。
  * 节点/徽标全部用 Astryx Card/Badge/Text 渲染；点击节点 → 下方展开该阶段完整详情。
  */
-import { useCallback, useMemo, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -10,6 +10,8 @@ import {
   Handle,
   Position,
   ReactFlow,
+  useNodesInitialized,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
@@ -112,6 +114,11 @@ function AgentNode({ data }: NodeProps<DagNode>) {
       }}
     >
       <Handle id="l" type="target" position={Position.Left} />
+      {/* 底部/顶部进出线专供备选路径：打回回路走下方，跳过执行走上方，避免与主链路叠线 */}
+      <Handle id="b-in" type="target" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle id="b-out" type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle id="t-in" type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle id="t-out" type="source" position={Position.Top} style={{ opacity: 0 }} />
       <Stack gap={2}>
         <Stack direction="horizontal" gap={2} vAlign="center" hAlign="between">
           <Text size="sm" weight="semibold">
@@ -209,7 +216,14 @@ function stageLines(name: GraphNodeName, run: RunState): string[] {
       if (results.length === 0) return [];
       // 打回重跑时同一检索会执行多次：这里只展示最后一轮各通道命中，避免重复累加
       const latest = results[results.length - 1];
-      const hits: Record<Channel, number> = { local: 0, web: 0, cloud: 0 };
+      const hits: Record<Channel, number> = {
+        local: 0,
+        web: 0,
+        cloud: 0,
+        image: 0,
+        tool: 0,
+        memory: 0,
+      };
       for (const rec of latest.retrievals ?? []) {
         const ch = rec.channel as Channel;
         if (ch in hits) hits[ch] += rec.hits;
@@ -239,7 +253,8 @@ function stageLines(name: GraphNodeName, run: RunState): string[] {
     case "writer": {
       const d = run.deliverable;
       if (!d) return [];
-      if (d.refused) return ["已拒答"];
+      if (d.refused && !d.degraded) return ["已拒答"];
+      if (d.degraded) return [`兜底交付 · 置信度 ${(d.confidence * 100).toFixed(0)}%`];
       return [`置信度 ${(d.confidence * 100).toFixed(0)}% · 引用 ${d.citations.length} 条`];
     }
   }
@@ -303,8 +318,9 @@ function computeTraversed(run: RunState): Set<string> {
   if (count["critic"] && (count["writer"] || run.phase === "interrupted")) {
     traversed.add("e-critic-writer");
   }
-  // 打回回路：retriever 执行多次即说明 critic→retriever 发生过
-  if ((count["retriever"] ?? 0) > 1) traversed.add("e-critic-retriever");
+  // 打回回路：检索执行多次，或快照里 round_no > 0 且检索确实跑过（回放只有最后一轮结果）
+  const retried = (run.roundNo ?? 0) > 0 || (count["retriever"] ?? 0) > 1;
+  if (retried && (count["retriever"] ?? 0) > 0) traversed.add("e-critic-retriever");
   return traversed;
 }
 
@@ -314,6 +330,16 @@ export interface FlowDagProps {
   onSelectNode: (node: string | null) => void;
   /** 选中节点的完整产出：浮在画布（网格）上，而非画布下方 */
   detail?: ReactNode;
+}
+
+/** DAG 异步到达时重新适配视口，避免初始 fitView 只测到空画布 */
+function AutoFit({ count }: { count: number }) {
+  const { fitView } = useReactFlow();
+  const initialized = useNodesInitialized();
+  useEffect(() => {
+    if (initialized) void fitView({ padding: 0.12, duration: 200 });
+  }, [count, initialized, fitView]);
+  return null;
 }
 
 export function FlowDag({ run, selectedNode, onSelectNode, detail }: FlowDagProps) {
@@ -350,20 +376,29 @@ export function FlowDag({ run, selectedNode, onSelectNode, detail }: FlowDagProp
       BASE_EDGES.map((e) => {
         const isTraversed = traversed.has(e.id);
         const isLoop = e.id === "e-critic-retriever";
+        const isSkip = e.id === "e-retriever-analyst";
+        // 备选路径（跳过执行 / 审校打回）只有真正走过时才画，否则会和主链路叠成一条线
+        const hidden = (isLoop || isSkip) && !isTraversed;
         return {
           id: e.id,
           source: e.source,
           target: e.target,
-          sourceHandle: "r",
-          targetHandle: "l",
+          sourceHandle: isLoop ? "b-out" : isSkip ? "t-out" : "r",
+          targetHandle: isLoop ? "b-in" : isSkip ? "t-in" : "l",
           type: "smoothstep" as const,
           animated: isTraversed,
           style: {
-            stroke: isTraversed ? "var(--color-text-success)" : "var(--color-border-emphasized)",
+            stroke:
+              isLoop && isTraversed
+                ? "var(--color-border-warning)"
+                : isTraversed
+                  ? "var(--color-text-success)"
+                  : "var(--color-border-emphasized)",
             strokeWidth: isTraversed ? 2 : 1.5,
-            opacity: isTraversed ? 1 : 0.55,
+            strokeDasharray: isLoop || isSkip ? "5 4" : undefined,
+            opacity: hidden ? 0 : isTraversed ? 1 : 0.55,
           },
-          label: isLoop ? "打回" : undefined,
+          label: isLoop && isTraversed ? "打回" : undefined,
           labelStyle: { fontSize: 11, fill: "var(--color-text-secondary)" },
           labelBgStyle: { fill: "var(--color-background-card)" },
         };
@@ -392,11 +427,12 @@ export function FlowDag({ run, selectedNode, onSelectNode, detail }: FlowDagProp
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable
-        minZoom={0.35}
+        minZoom={0.2}
         maxZoom={1.4}
       >
         <Background variant={BackgroundVariant.Dots} gap={22} size={1} />
         <Controls showInteractive={false} />
+        <AutoFit count={nodes.length} />
       </ReactFlow>
 
       {detail ? (

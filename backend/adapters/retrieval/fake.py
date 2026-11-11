@@ -31,11 +31,12 @@ class FakeRetriever:
         for i, (doc_toks, doc) in enumerate(self._doc_tokens):
             if filters and "modality" in filters and doc.source.modality != filters["modality"]:
                 continue
-            score = float(len(q_tokens & doc_toks))
-            if score >= self._min_score:
-                scored.append((score, -i, doc))
+            hits = float(len(q_tokens & doc_toks))
+            if hits >= self._min_score:
+                scored.append((hits, -i, doc))
         scored.sort(reverse=True)
+        total = max(len(q_tokens), 1)
         return [
-            doc.model_copy(update={"score": score})
-            for score, _, doc in scored[: self._top_k]
+            doc.model_copy(update={"score": round(min(hits / total, 1.0), 3)})
+            for hits, _, doc in scored[: self._top_k]
         ]

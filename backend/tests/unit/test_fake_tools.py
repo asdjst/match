@@ -37,3 +37,26 @@ def test_unknown_tool_raises():
 
 def test_list_tools():
     assert "growth_rate" in FakeTools().list_tools()
+    assert {"query_food_nutrition", "calculate_gl"} <= set(FakeTools().list_tools())
+
+
+def test_query_food_nutrition():
+    out = FakeTools().call("query_food_nutrition", {"name": "一碗米饭"})
+
+    assert out["ok"] is True
+    assert out["result"] == {"name": "米饭", "carbs_per_100g": 25.9, "gi": 83}
+    assert out["source"]
+
+
+def test_calculate_gl():
+    # GI 83 × 50g / 100 = 41.5
+    out = FakeTools().call("calculate_gl", {"name": "米饭", "carbs_g": 50})
+
+    assert out["ok"] is True
+    assert out["result"] == 41.5
+    assert out["gi"] == 83
+
+
+def test_food_tool_unknown_food():
+    assert FakeTools().call("query_food_nutrition", {"name": "火星果"})["ok"] is False
+    assert FakeTools().call("calculate_gl", {"name": "火星果", "carbs_g": 10})["ok"] is False

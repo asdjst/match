@@ -109,3 +109,104 @@ def test_rounds_exhausted_pauses_for_human_then_resume():
     assert d["refused"] is True
     assert d["degraded"] is True
     assert "人工已放行" in d["refusal_reason"]
+
+
+def test_critic_drops_positive_statements_from_issues():
+    from core.graph.nodes.critic import _llm_review
+    from core.schemas.agent import CriticOutput
+    from core.schemas.deliverable import Assertion
+
+    class StubLLM:
+        def __init__(self, out):
+            self._out = out
+
+        def complete(self, prompt, tier=None, schema=None):
+            return self._out
+
+    assertion = Assertion(text="米饭碳水约 39g", cites=["E1"])
+    positive = CriticOutput(
+        verdict="send_back", issues=["引用编号均存在，证据支持断言"], send_back_to="retriever"
+    )
+    # 只有通过项/表扬 → 不构成打回理由
+    assert _llm_review(StubLLM(positive), {"question": "q"}, {}, [assertion]) == ([], None)
+
+    concrete = CriticOutput(
+        verdict="send_back", issues=["断言中的 39g 在 E1 中查无对应数值"], send_back_to="retriever"
+    )
+    issues, target = _llm_review(StubLLM(concrete), {"question": "q"}, {}, [assertion])
+    assert issues == ["断言中的 39g 在 E1 中查无对应数值"]
+    assert target == "retriever"
+
+    many = CriticOutput(
+        verdict="send_back",
+        issues=[f"第{i}条必须修改" for i in range(1, 8)],
+        send_back_to="analyst",
+    )
+    # 每轮最多回传 5 条，避免一轮塞太多把分析员带偏
+    issues, target = _llm_review(StubLLM(many), {"question": "q"}, {}, [assertion])
+    assert len(issues) == 5
+    assert target == "analyst"
+
+
+def test_tidy_assertions_dedupes_and_caps():
+    from core.graph.nodes.roles import MAX_ASSERTIONS, _tidy_assertions
+    from core.schemas.deliverable import Assertion
+
+    assertions = [
+        Assertion(text="每天食盐不超过 5g", cites=["E20"]),
+        Assertion(text="每天食盐不超过5克", cites=["E21"]),
+    ] + [
+        Assertion(text=f"第{i}条互不相同的建议", cites=["E1"]) for i in range(1, 10)
+    ]
+
+    kept = _tidy_assertions(assertions)
+
+    # 同义重复的盐句子只留第一条，总数封顶 7
+    assert len(kept) == MAX_ASSERTIONS
+    assert kept[0].cites == ["E20"]
+    assert all("克" not in a.text for a in kept[1:])
+
+
+def test_analyst_receives_previous_critic_issues():
+    from core.graph.nodes.roles import make_analyst
+    from core.schemas.agent import AnalystOutput
+    from core.schemas.dag import TaskDAG
+
+    class CaptureLLM:
+        def __init__(self):
+            self.prompt = None
+
+        def complete(self, prompt, tier=None, schema=None):
+            self.prompt = prompt
+            return AnalystOutput(assertions=[])
+
+    llm = CaptureLLM()
+    state = {
+        "dag": TaskDAG(question="吃这个需要注意什么？").model_dump(),
+        "question": "吃这个需要注意什么？",
+        "evidence": {},
+        "verdict": {"verdict": "send_back", "issues": ["删掉重复的盐句子", "说明莲藕按主食算"]},
+    }
+
+    make_analyst(llm)(state)
+
+    # 审校意见必须进入下一轮分析员任务，否则 send_back 只是白跑一次检索
+    assert "上一轮审校意见" in llm.prompt.task
+    assert "删掉重复的盐句子" in llm.prompt.task
+    assert "说明莲藕按主食算" in llm.prompt.task
+
+
+def test_send_back_to_analyst_routes_back_to_analyst():
+    from core.graph.builder import _after_critic
+    from core.schemas.dag import TaskDAG
+
+    state = {
+        "dag": TaskDAG(question="q").model_dump(),
+        "round_no": 1,
+        "verdict": {"verdict": "send_back", "issues": ["与前文重复"], "send_back_to": "analyst"},
+    }
+    assert _after_critic(state) == "analyst"
+    # 未给目标时仍回到检索
+    state["verdict"] = {"verdict": "send_back", "issues": ["证据缺失"]}
+    assert _after_critic(state) == "retriever"
+

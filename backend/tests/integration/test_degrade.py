@@ -10,8 +10,8 @@ from infra.config import Settings
 
 
 @pytest.fixture()
-def client():
-    return TestClient(create_app(Settings(mode="fake")))
+def client(tmp_path):
+    return TestClient(create_app(Settings(mode="fake", db_path=str(tmp_path / "runs.db"))))
 
 
 def _deliverable(events):

@@ -94,7 +94,7 @@ class R2RClient:
                 Evidence(
                     doc_id=str(item.get("document_id") or metadata.get("document_id") or "r2r"),
                     quote=item.get("text", ""),
-                    score=float(item.get("score", 0.0)),
+                    score=max(0.0, min(1.0, float(item.get("score", 0.0)))),
                     source=SourceRef(
                         file_path=metadata.get("file_path"),
                         section=metadata.get("section"),

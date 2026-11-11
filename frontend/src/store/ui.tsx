@@ -4,7 +4,7 @@
  */
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
-export type PageKey = "chat" | "trace";
+export type PageKey = "chat" | "profile" | "audit";
 export type ColorMode = "light" | "dark";
 
 interface UiContextValue {

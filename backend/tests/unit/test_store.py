@@ -62,6 +62,11 @@ def test_save_then_get_round_trips_payload(tmp_path):
         "pending_human": False,
         "dag": DAG,
         "evidence": EVIDENCE,
+        "image_id": None,
+        "food_items": [],
+        "profile": None,
+        "timings": [],
+        "duration_ms": None,
     }
     assert got["node_results"]["r1"]["retrievals"][0]["channel"] == "local"
     assert store.get_run("missing") is None
@@ -135,3 +140,31 @@ def test_reopen_same_path_reads_persisted_run(tmp_path):
     assert got["deliverable"]["confidence"] == 0.9
     assert second.list_runs()[0]["run_id"] == "run-1"
     second.close()
+
+
+def test_history_returns_recent_turns_in_order(tmp_path):
+    store = _store(tmp_path)
+    for i, question in enumerate(["第一问", "第二问", "第三问"]):
+        store.save_run(f"run-{i}", _state(question=question, deliverable=DELIVERABLE), session_id="s1")
+    store.save_run("other", _state(question="别的会话"), session_id="s2")
+
+    history = store.history("s1", last=2)
+
+    # 只取本会话最近两轮，且按时间正序回填给 planner
+    assert [h["question"] for h in history] == ["第二问", "第三问"]
+    assert history[0]["answer"] == "营业收入 120 亿元"
+    assert history[0]["confidence"] == 0.9
+    store.close()
+
+
+def test_recent_food_names_falls_back_to_latest_photo(tmp_path):
+    store = _store(tmp_path)
+    state = _state("我之前吃过这些吗")
+    state["food_items"] = [{"name": "甜玉米", "grams_low": 120}, {"name": "樱桃"}]
+    store.save_run("photo", state, session_id="s1")
+    store.save_run("follow-up", _state("那甜玉米呢"), session_id="s1")
+    store.save_run("other", _state("别的会话"), session_id="s2")
+
+    assert store.recent_food_names("s1") == ["甜玉米", "樱桃"]
+    assert store.recent_food_names("s2") == []
+    store.close()

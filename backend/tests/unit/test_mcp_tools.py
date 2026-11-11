@@ -24,6 +24,24 @@ def test_list_tools_exposes_expected(gateway):
     tools = gateway.list_tools()
     assert "growth_rate" in tools  # 契约必备
     assert {"yoy_diff", "sum", "avg"} <= set(tools)
+    assert {"query_food_nutrition", "calculate_gl"} <= set(tools)
+
+
+def test_food_tools_contract(gateway):
+    nutrition = gateway.call("query_food_nutrition", {"name": "米饭"})
+    assert nutrition["ok"] is True
+    assert nutrition["result"]["carbs_per_100g"] == 25.9
+    assert nutrition["result"]["gi"] == 83
+
+    gl = gateway.call("calculate_gl", {"name": "米饭", "carbs_g": 50})
+    assert gl["ok"] is True
+    assert gl["result"] == 41.5
+
+
+def test_string_param_rejected(gateway):
+    out = gateway.call("query_food_nutrition", {"name": "   "})
+    assert out["ok"] is False
+    assert "name" in out["error"]
 
 
 def test_growth_rate_matches_fake_contract(gateway):

@@ -1,80 +1,127 @@
-# multi-agent-rag（多智能体 RAG 参赛系统）
+# Glucoguard · 控糖饮食多智能体
 
-请求 → 五角色图（planner→retriever→executor→analyst→critic→writer）→ 带引用交付物 → SSE。设计见 [../工程架构设计.md](../工程架构设计.md)，排期见 [../开发计划.md](../开发计划.md)，指标看板见 [docs/metrics.md](docs/metrics.md)。
+慢性病（2 型糖尿病）饮食助手：**拍一张餐盘照片 → 识别食物与份量 → 算碳水/升糖负荷 → 检索指南与权威资料 → 安全护栏 → 输出逐句带引用的饮食建议**。所有结论都能点回证据（本地指南摘编 / 联网页面 / 食物数据库），检索与工具调用全程可在轨迹页回放。
+
+> 定位是饮食与生活方式参考，不是医疗器械：不做诊断、不给胰岛素或降糖药剂量建议。演示用食物数据为公开食物成分表整理，联网搜索结果取决于当时页面内容。
+
+## 能力
+
+| 通道 | 实现 |
+|---|---|
+| 拍照识餐 | 上传图片 → VLM 返回食物名/份量/置信度 → 逐项可修正；图片落盘后可按 `image_id` 回放 |
+| 语音输入 | 浏览器 Web Speech API（`zh-CN`）把口述转成问题，识别结果直接追加到输入框；不支持或没授权时只提示，不影响打字 |
+| 本地知识库 | R2R 检索 8 篇指南摘编（食养指南 2023、T2DM 防治指南 2020、医学营养治疗 2022 等），按 H2 切段 |
+| 联网检索 | 博查 / Tavily / DDGS 三选一，官方与学会域名加权，结果短时缓存 + 失败冷却，避免反复重试拖慢回答 |
+| 餐食工具 | MCP 工具算碳水、升糖负荷（GL）、餐盘结构；调用流水进审计 |
+| 编排 | LangGraph 六角色：planner → retriever → (executor｜analyst) → analyst → critic → critic→analyst｜retriever｜writer；分析员最多 7 条断言、按“当前餐→怎么改→长期”排序，审校只拦硬错误，打回意见回传到下一轮分析员，轮数用尽时在 Writer 前挂起等人工放行 |
+| 个人餐食记忆 | 拍照后或“我吃了…”时弹出记录框，存食物/份量/时间/备注/餐前餐后血糖；提问含食物名、“上次/之前”或“今天/昨天吃了什么”时，这些记录作为 `memory` 通道证据入池，和指南、联网结果一起被引用 |
+| 健康档案 | 身高/体重/年龄/活动量/目标 → 后端算 BMI → 作为份量与活动建议上下文，不进证据池；下方是餐食记录、血糖，以及近 7 天碳水柱状图、最近 14 天血糖折线 |
+| 回答图表 | 问题涉及个人记录时，回答下方按问题自动附「血糖走势 / 每日碳水 / 今天各餐碳水」自绘 SVG；只画已记录数据，不补点、不预测 |
+| 可观测 | SSE 实时节点事件、每节点耗时、持久化任务快照、轨迹页 DAG 回放；历史提问与运行轨迹同页可回放 |
 
 ## 快速开始
 
+前置：Docker（R2R 栈）、Python 3.12+、Node 20+。
+
 ```bash
-./deploy/up.sh            # 一键：R2R 栈 + 建库 + API（live）
-./deploy/up.sh --offline  # 断网演示包：fake 模式全离线（假 LLM/检索/工具）
+# 1. 本地知识库（R2R + PG + embeddings，:7272）
+docker compose -f deploy/docker-compose.yml up -d
+
+# 2. 后端配置：模型 key 填在 backend/.env（模板见 backend/.env.example）
+cd backend
+cp .env.example .env            # 填 MRAG_FAST_* / MRAG_STRONG_*
+.venv/bin/python scripts/seed_r2r.py
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# 3. 前端（:5173，代理到 :8000）
+cd ../frontend
+npm install
+npm run dev
 ```
 
-手动：
+`./deploy/up.sh` 会把第 1、2 步串起来；`./deploy/up.sh --offline` 用 fake 模式全离线跑通界面与测试。
+
+冒烟：
 
 ```bash
-cd backend
-uv venv --python 3.12 .venv && . .venv/bin/activate
-uv pip install -r requirements.txt
-pytest                 # 单测 + 集成（全离线，124 条）
-uvicorn app.main:app   # 起服务后：
+curl -s localhost:8000/api/health
 curl -N -X POST localhost:8000/api/chat -H 'content-type: application/json' \
-  -d '{"question":"A公司2024年营业收入是多少？"}'
+  -d '{"question":"今天血糖 12.8，晚饭还能吃米饭吗？"}'
 ```
 
 ## 运行模式（MRAG_MODE）
 
 | 模式 | LLM | 检索 | 工具 | 用途 |
 |---|---|---|---|---|
-| fake（默认） | FakeLLM（确定性脚本） | FakeRetriever（内置演示语料） | FakeTools | 单测 / 断网演示包 |
-| live | LiteLLM 双档路由（opencode 网关） | R2R（r2r_client） | MCP stdio Server + 治理层 | 联调 / 评测 / 演示 |
+| fake（默认） | FakeLLM（确定性脚本） | FakeRetriever | FakeTools | 单测 / 断网演示 |
+| live | LiteLLM 双档路由 | R2R + 可选联网 | MCP stdio Server + 治理层 | 联调 / 演示 |
 
-live 模式 key 在 `backend/.env`（gitignored）：`MRAG_FAST_*` / `MRAG_STRONG_*` / `MRAG_R2R_*`。
+模型按档位分工：`fast` 跑规划、结构化抽取与置信度评分，`strong` 跑分析与写作。延迟优先时保留 `deepseek-flash` 并用 `MRAG_FAST_EXTRA_BODY={"thinking":{"type":"disabled"}}` 关掉思考模式（实测与换 `deepseek-chat` 同耗时，但不用换模型）；需要更强推理时再给 strong 单独开思考。
 
-## 个人配置清单
+## 配置
 
-只列需要你本人填的 key。后端只读 `backend/.env`（[config.py:21](backend/infra/config.py#L21) 定位、[:31](backend/infra/config.py#L31) 加 `MRAG_` 前缀）；`deploy/.env` 仅给 compose 用。
+后端只读 `backend/.env`（`MRAG_` 前缀，[config.py](backend/infra/config.py)）；`deploy/.env` 仅给 compose 使用。**密钥不要提交**。
 
-| Key | 位置（模板行号） | 何时必填 | 说明 |
-|---|---|---|---|
-| `MRAG_FAST_MODEL` / `MRAG_FAST_BASE_URL` / `MRAG_FAST_API_KEY` | `backend/.env` · `.env.example:6-8` | live **必须** | 快档模型与网关；MODEL/API_KEY 缺失时 [:128](backend/infra/config.py#L128) 启动报错 |
-| `MRAG_STRONG_MODEL` / `MRAG_STRONG_BASE_URL` / `MRAG_STRONG_API_KEY` | `backend/.env` · `.env.example:9-11` | live **必须** | 强档模型与网关 |
-| `MRAG_R2R_API_KEY` | `backend/.env` · `.env.example:19` | 可选 | 本机 docker 栈未鉴权时留空 |
-| `MRAG_GDRIVE_CLIENT_ID` / `CLIENT_SECRET` / `REFRESH_TOKEN` | `backend/.env` · `.env.example:31-33` | 云端网盘三选一 | OAuth 方式，可读私有网盘 |
-| `MRAG_GDRIVE_SERVICE_ACCOUNT_JSON` | `backend/.env` · `.env.example:35` | 云端网盘三选一 | JSON 路径或整段；SA 无配额，须把文件夹共享给 `client_email` |
-| `MRAG_GDRIVE_API_KEY` | `backend/.env` · `.env.example:37` | 云端网盘三选一 | 仅公开共享文件 |
-| `MRAG_GDRIVE_FOLDER_ID` | `backend/.env` · `.env.example:39` | 可选 | 限定只检索某个 Drive 文件夹 |
-| `MRAG_WEB_SEARCH_PROXY` | `backend/.env` · `.env.example:27` | 出网需代理时 | 例 `http://127.0.0.1:7890`；不填则多引擎轮换直连 |
-| `MRAG_GDRIVE_PROXY` | `backend/.env` · `.env.example:42` | 同上 | Google 域名直连不通时填 |
-| `MRAG_LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | `backend/.env` · `.env.example:48-49` | 可选 | 两把都填才启用埋点 |
-| `MRAG_FUNASR_URL` | `backend/.env` · `.env.example:53` | 可选 | 不填则 m4a/wav 走本地转写 JSON |
-| `R2R_IMAGE` | `deploy/.env` · `.env.example:5` | compose **必须** | 镜像版本 pin，如 `sciphiai/r2r:3.6.6` |
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `MRAG_FAST_MODEL` / `_BASE_URL` / `_API_KEY` | live 必须 | 快档模型（规划/抽取/评分） |
+| `MRAG_STRONG_MODEL` / `_BASE_URL` / `_API_KEY` | live 必须 | 强档模型（分析/写作） |
+| `MRAG_FAST_EXTRA_BODY` / `MRAG_STRONG_EXTRA_BODY` | 可选 | 透传请求体；快档默认 `{"thinking":{"type":"disabled"}}` |
+| `MRAG_R2R_BASE_URL` / `_COLLECTION` | live 必须 | 默认 `http://localhost:7272` / `demo` |
+| `MRAG_RETRIEVAL_TIMEOUT_S` | 可选 | 单次检索超时，默认 8s |
+| `MRAG_WEB_SEARCH` / `_TOP_K` | 可选 | 联网开关与条数，默认开 / 3 |
+| `MRAG_WEB_PROVIDER` | 可选 | `bocha`（博查，国内，有免费额度）｜`tavily`（1000 次/月免费）｜`ddgs`（免 key，易限流） |
+| `MRAG_WEB_API_KEY` | 选 provider 时必填 | 博查或 Tavily 的 key；缺失自动回退 DDGS |
+| `MRAG_WEB_SEARCH_TIMEOUT_S` | 可选 | 联网单次超时，默认 3s |
+| `MRAG_WEB_SEARCH_PROXY` | 可选 | 出网代理，如 `http://127.0.0.1:7890` |
+| `MRAG_CORS_ORIGINS` | 可选 | 逗号分隔，默认本地 5173 |
+| `MRAG_UPLOAD_DIR` / `MRAG_DB_PATH` | 可选 | 餐图与运行快照目录，默认 `backend/data/` |
+| `MRAG_GDRIVE_*` | 可选 | 云端网盘通道，当前未配置即自动关闭 |
 
-非密钥类本机配置：前端代理目标 `BACKEND_ORIGIN`（[vite.config.ts:5](frontend/vite.config.ts#L5)，默认 `http://localhost:8000`）、无后端演示 `VITE_MOCK=1`（[runs.tsx:101](frontend/src/store/runs.tsx#L101)）。
+百度千帆本身是大模型平台（送 ERNIE 免费调用额度），不提供独立的可引用搜索接口；要换搜索源用博查或 Tavily。
 
 ## API
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/chat` | SSE：`run → (guard) → node* → deliverable → done`；注入被拦走 guard 短路 |
-| `POST /api/chat` 触发断点时 | 打回轮数用尽 → `needs_human` 事件后收流，任务挂起 |
-| `GET /api/tasks/{run_id}` | 回放节点轨迹 / 交付物 / `pending_human` |
+| `GET /api/health` | 存活、模式、是否联网、当前搜索源 |
+| `POST /api/chat` | SSE：`run → (guard) → node* → deliverable → done`；体可带 `profile` 与 `session_id` |
+| `POST /api/food/analyze` | 上传餐图，返回食物项、份量、置信度与 `image_id` |
+| `GET /api/food/images/{image_id}` | 回放已存餐图（32 位十六进制 ID） |
+| `GET /api/tasks/{run_id}` | 任务快照：节点轨迹、证据、交付物、耗时、`pending_human` |
 | `POST /api/tasks/{run_id}/approve` | 人工放行断点 → 返回兜底交付物（degraded） |
+| `GET/POST /api/meals` | 个人餐食记录列表 / 新建（食物、份量、碳水、GL、备注） |
+| `GET/PATCH/DELETE /api/meals/{meal_id}` | 单条记录读取、修改、删除 |
+| `POST/DELETE /api/meals/{meal_id}/glucose` | 追加 / 删除血糖读数（`minutes_after` 0 表示餐前，默认 120；可为接入 CGM 预留） |
 
-## 评测与演练
+`POST /api/chat` 可带 `user_id`（默认 `local`），后端按问题里的食物名与“上次/之前”等线索，从这个用户的历史餐食里挑记录并入证据池。
+
+## 测试与评测
 
 ```bash
 cd backend
-.venv/bin/python eval/run_metrics.py          # 检索指标：Recall@5 / MRR（全量 50，不花 LLM）
-.venv/bin/python eval/run_metrics.py --n 20   # + 管线指标（引用准确率/无源断言率/拒答）+ 消融（直连 vs RAG）
-.venv/bin/python eval/run_guard_eval.py       # 注入拦截率 / 误拦率（50 条样本库）
-.venv/bin/python eval/golden.py               # 重新生成金标 50（人工只需复核 human_review 列）
-../deploy/drill_degrade.sh                    # 降级演练：掐 R2R / 错模型 key → 10s 内 degraded 兜底
+.venv/bin/python -m pytest -q            # 单测 + 集成，全离线，225 条
+.venv/bin/python eval/run_metrics.py     # Recall@5 / MRR（不花 LLM）
+.venv/bin/python eval/run_guard_eval.py  # 注入拦截率 / 误拦率
+../deploy/drill_degrade.sh               # 掐 R2R / 错 key → degraded 兜底
+```
+
+## 目录
+
+```
+backend/
+  adapters/    LLM 路由、R2R/联网检索、VLM、MCP 工具、护栏
+  core/        领域模型、LangGraph 图与节点、置信度、注入清洗、存储
+  app/         FastAPI 入口与 API
+  demo_assets/ 指南摘编与演示物料
+frontend/      React 19 + Astryx 工作台（工作台 / 健康档案 / 合规审计）
+deploy/        R2R compose 与降级演练脚本
 ```
 
 ## 约定
 
-- core/ 零轮子依赖；adapters/ 只把轮子翻译成 ports；装配只在 `app/main.py`。
-- 所有 R2R 调用只允许出现在 `adapters/retrieval/r2r_client.py`；镜像版本在 deploy compose pin 死。
-- 工具治理（审计 JSONL/超时/参数校验）在 `adapters/tools/governance.py`，MCP 会话在 `adapters/tools/mcp_client.py`。
-- 全节点轨迹：每次会话一条 Langfuse trace，节点事件 `node:<name>`；打回/断点/降级均有事件。
-- 单文件 ≤300 行。
+- `core/` 不依赖第三方轮子，`adapters/` 只做协议翻译，装配集中在 `app/main.py`。
+- 所有 R2R 调用只在 `adapters/retrieval/r2r_client.py`；镜像版本在 compose 里 pin 死。
+- 工具治理（审计 JSONL / 超时 / 参数校验）在 `adapters/tools/governance.py`。
+- 检索证据进 prompt 前经 `core/services/injection.py` 中和指令型片段，引用卡片仍展示原文。
+- 测试一律用临时库，不写演示数据库。
