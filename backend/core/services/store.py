@@ -87,8 +87,10 @@ class RunStore:
             "food_items": state.get("food_items", []),
             "profile": state.get("profile"),
             # 各图节点耗时与整轮总耗时：用于定位慢在检索还是模型
+            "node_events": state.get("node_events", []),
             "timings": state.get("timings", []),
             "duration_ms": state.get("duration_ms"),
+            "error": state.get("error"),
         }
         now = _now()
         # 首次写入用 created_at=now，后续 upsert 保留原 created_at

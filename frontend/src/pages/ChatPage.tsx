@@ -5,12 +5,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Banner, Button, Card, Stack, TextArea, Text } from "@astryxdesign/core";
 import { useRuns, type RunState } from "../store/runs";
 import { DeliverableView } from "../components/DeliverableView";
-import { RunTrace, RunTracePanel } from "../components/RunTrace";
+import { AgentFeedback, ExecutionCard, EXECUTION_ICON, RunStatus } from "../components/AgentActivity";
 import { MODALITY_META } from "../components/EvidenceCard";
 import { MealCard } from "../components/MealCard";
 import { MealLogDialog, formatEatenAt, localNow, mealTypeFor } from "../components/MealLogDialog";
 import { AnswerChart } from "../components/MealCharts";
 import { BrandMark } from "../components/BrandMark";
+import HealthFileCard from "../components/HealthFileCard";
 import { VoiceInputButton } from "../components/VoiceInputButton";
 import { analyzeFood, listMeals } from "../api/client";
 import {
@@ -92,6 +93,14 @@ const SEND_ICON = (
   </svg>
 );
 
+const FILE_ICON = (
+  <svg {...ICON_PROPS} width={22} height={22}>
+    <path d="M6 3h9l4 4v14H6z" />
+    <path d="M15 3v4h4" />
+    <path d="M9 12h6M9 16h4" />
+  </svg>
+);
+
 /** 拍照识别后的食物清单 → 记录弹窗的初始值（取区间中值，仍可在弹窗里改） */
 function mealDraftFromItems(items: FoodItem[], imageId?: string | null): Partial<MealDraft> {
   return {
@@ -155,7 +164,7 @@ function RunMessage({
         ) : null}
       </div>
 
-      <RunTrace run={run} />
+      <RunStatus run={run} onOpen={viewTrace} open={traceOpen} />
 
       <div className="assistant-block">
         <div className="assistant-head">
@@ -166,20 +175,11 @@ function RunMessage({
             <strong>Glucoguard</strong>
             <small>{run.phase === "streaming" ? "正在分析…" : "慢病控糖膳食助手"}</small>
           </div>
-          <div className="assistant-actions">
-            {run.phase !== "streaming" ? (
-              <Button
-                label="查看轨迹"
-                variant={traceOpen ? "secondary" : "ghost"}
-                size="sm"
-                onClick={viewTrace}
-              />
-            ) : null}
-          </div>
         </div>
 
         <div className="answer-card">
           <Stack gap={4}>
+            <AgentFeedback run={run} />
             {run.food ? (
               <section className="answer-meal">
                 <MealCard food={run.food} run={run} />
@@ -341,6 +341,9 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [selected, setSelected] = useState<{ id: string; evidence: Evidence } | null>(null);
   const [traceKey, setTraceKey] = useState<string | null>(null);
+  const [executionOpen, setExecutionOpen] = useState(false);
+  const executionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const dismissedExecutions = useRef(new Set<string>());
   const [file, setFile] = useState<File | null>(null);
   const [food, setFood] = useState<FoodAnalysis | null>(null);
   const [foodItems, setFoodItems] = useState<FoodItem[]>([]);
@@ -353,8 +356,10 @@ export default function ChatPage() {
   const [savedMeal, setSavedMeal] = useState<MealRecord | null>(null);
   const [meals, setMeals] = useState<MealRecord[]>([]);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [fileOpen, setFileOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const fileTriggerRef = useRef<HTMLButtonElement | null>(null);
   // 多次选择/移除照片时，旧请求的识别结果不能覆盖新状态
   const uploadSeq = useRef(0);
   const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
@@ -370,10 +375,27 @@ export default function ChatPage() {
     };
   }, [previewUrl]);
 
+  const latestRun = threadRuns.at(-1);
+  const runningKey = latestRun?.phase === "streaming" ? latestRun.key : null;
+
   useEffect(() => {
     setSelected(null);
     setTraceKey(null);
+    setExecutionOpen(false);
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!runningKey || dismissedExecutions.current.has(runningKey)) return;
+    setTraceKey(runningKey);
+    setExecutionOpen(true);
+    setFileOpen(false);
+  }, [runningKey, activeSessionId]);
+
+  const closeExecution = useCallback(() => {
+    const key = traceKey ?? latestRun?.key;
+    if (key) dismissedExecutions.current.add(key);
+    setExecutionOpen(false);
+  }, [traceKey, latestRun?.key]);
 
   const refreshMeals = useCallback(async () => {
     if (transportKind !== "live") return;
@@ -394,19 +416,23 @@ export default function ChatPage() {
       run.deliverable?.citations.find((ev) => ev.evidence_id === id) ??
       null;
     if (!evidence) return;
-    setTraceKey(null);
+    setExecutionOpen(false);
+    dismissedExecutions.current.add(run.key);
     setSelected((cur) => (cur?.id === id ? null : { id, evidence }));
   }, []);
 
   const handleViewTrace = useCallback((run: RunState) => {
+    if (executionOpen && (traceKey ?? latestRun?.key) === run.key) {
+      closeExecution();
+      return;
+    }
     setSelected(null);
-    setTraceKey((cur) => (cur === run.key ? null : run.key));
-  }, []);
+    setFileOpen(false);
+    setTraceKey(run.key);
+    setExecutionOpen(true);
+  }, [closeExecution, executionOpen, traceKey, latestRun?.key]);
 
-  const traceRun = useMemo(
-    () => runs.find((r) => r.key === traceKey) ?? null,
-    [runs, traceKey],
-  );
+  const traceRun = threadRuns.find((r) => r.key === traceKey) ?? latestRun ?? null;
 
   /** 记录按钮不再自动弹窗：用户点哪条消息的“记录”，就带哪条的识别结果 */
   const openLogForRun = useCallback((run: RunState) => {
@@ -540,7 +566,7 @@ export default function ChatPage() {
                   onCiteClick={handleCiteClick}
                   onLogMeal={openLogForRun}
                   onViewTrace={handleViewTrace}
-                  traceOpen={traceKey === run.key}
+                  traceOpen={executionOpen && traceRun?.key === run.key}
                   logged={loggedRunKeys.includes(run.key)}
                   meals={meals}
                 />
@@ -658,15 +684,52 @@ export default function ChatPage() {
         </div>
       </div>
       </div>
+      <button
+        ref={fileTriggerRef}
+        type="button"
+        className="health-file-trigger"
+        aria-label={fileOpen ? "收起健康档案" : "展开健康档案"}
+        aria-controls="health-file-card"
+        aria-expanded={fileOpen}
+        title={fileOpen ? "收起健康档案" : "健康档案"}
+        onClick={() => {
+          setFileOpen((value) => !value);
+          closeExecution();
+        }}
+      >
+        {FILE_ICON}
+      </button>
+      <HealthFileCard
+        open={fileOpen}
+        onClose={() => setFileOpen(false)}
+        anchorRef={fileTriggerRef}
+      />
       {selected ? (
         <CitationPanel
           id={selected.id}
           evidence={selected.evidence}
           onClose={() => setSelected(null)}
         />
-      ) : traceRun ? (
-        <RunTracePanel run={traceRun} onClose={() => setTraceKey(null)} />
       ) : null}
+      <Button
+        ref={executionTriggerRef}
+        className={`execution-trigger${latestRun?.phase === "streaming" ? " is-running" : ""}`}
+        label={executionOpen ? "收起执行过程" : "展开执行过程"}
+        variant={executionOpen ? "secondary" : "ghost"}
+        isIconOnly
+        icon={EXECUTION_ICON}
+        aria-controls="execution-card"
+        aria-expanded={executionOpen}
+        onClick={() => {
+          if (executionOpen) closeExecution();
+          else {
+            setExecutionOpen(true);
+            setFileOpen(false);
+            setSelected(null);
+          }
+        }}
+      />
+      {executionOpen ? <ExecutionCard run={traceRun} onClose={closeExecution} anchorRef={executionTriggerRef} /> : null}
       <MealLogDialog
         open={logOpen}
         initial={logInitial}

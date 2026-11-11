@@ -2,7 +2,8 @@
  * 健康档案：基础信息 + 餐食记录 + 趋势。
  * 基础信息只存浏览器；餐食记录存后端 SQLite，既是档案也是问答记忆。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { Banner, Button, EmptyState, Text } from "@astryxdesign/core";
 import { addGlucose, deleteGlucose, deleteMeal, listMeals } from "../api/client";
 import { MealLogDialog, formatEatenAt } from "../components/MealLogDialog";
@@ -85,7 +86,15 @@ function ByFood({ meals }: { meals: MealRecord[] }) {
   );
 }
 
-export default function ProfilePage() {
+export default function ProfilePage({
+  embedded = false,
+  scrollRef,
+  onScroll,
+}: {
+  embedded?: boolean;
+  scrollRef?: RefObject<HTMLDivElement | null>;
+  onScroll?: () => void;
+}) {
   const { transportKind } = useRuns();
   const [profile, setProfile] = useState<Profile>(load);
   const [tab, setTab] = useState<"records" | "trend">("records");
@@ -173,10 +182,27 @@ export default function ProfilePage() {
     }
   };
 
+  const dialog = (
+    <MealLogDialog
+      open={logOpen}
+      title="手动记一顿"
+      dismissLabel="取消"
+      onClose={() => setLogOpen(false)}
+      onSaved={(meal) => {
+        setSaved(`${formatEatenAt(meal.eaten_at)} ${meal.meal_type} · ${foodsText(meal)}`);
+        void refresh();
+      }}
+    />
+  );
+
   return (
-    <div className="app-scroll">
-      <div className="page-body">
-        <section className="profile-block">
+    <div
+      ref={embedded ? scrollRef : undefined}
+      className={embedded ? "health-file-content" : "app-scroll"}
+      onScroll={embedded ? onScroll : undefined}
+    >
+      <div className={embedded ? "health-file-body" : "page-body"}>
+        <section className="profile-block" id={embedded ? "health-basics" : undefined}>
           <div className="profile-block-head">
             <h2>基础信息</h2>
             <div className="pf-bmi-inline">
@@ -263,35 +289,52 @@ export default function ProfilePage() {
           </p>
         </section>
 
-        <div className="profile-tabs">
-          <div className="profile-tab-group">
+        {embedded ? (
+          <div className="health-file-section-head" id="health-records">
+            <span>02 / 餐食记录</span>
             <button
               type="button"
-              className={`profile-tab${tab === "records" ? " is-active" : ""}`}
-              onClick={() => setTab("records")}
+              className="profile-add"
+              disabled={transportKind !== "live"}
+              onClick={() => setLogOpen(true)}
             >
-              餐食记录<span>{meals.length}</span>
-            </button>
-            <button
-              type="button"
-              className={`profile-tab${tab === "trend" ? " is-active" : ""}`}
-              onClick={() => setTab("trend")}
-            >
-              趋势
+              <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+              手动记一顿
             </button>
           </div>
-          <button
-            type="button"
-            className="profile-add"
-            disabled={transportKind !== "live"}
-            onClick={() => setLogOpen(true)}
-          >
-            <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
-              <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            手动记一顿
-          </button>
-        </div>
+        ) : (
+          <div className="profile-tabs">
+            <div className="profile-tab-group">
+              <button
+                type="button"
+                className={`profile-tab${tab === "records" ? " is-active" : ""}`}
+                onClick={() => setTab("records")}
+              >
+                餐食记录<span>{meals.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`profile-tab${tab === "trend" ? " is-active" : ""}`}
+                onClick={() => setTab("trend")}
+              >
+                趋势
+              </button>
+            </div>
+            <button
+              type="button"
+              className="profile-add"
+              disabled={transportKind !== "live"}
+              onClick={() => setLogOpen(true)}
+            >
+              <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M6 1.5v9M1.5 6h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+              手动记一顿
+            </button>
+          </div>
+        )}
 
         {error ? <Banner status="error" title="操作失败" description={error} /> : null}
         {saved ? <Banner status="success" title="已记入健康档案" description={saved} /> : null}
@@ -299,7 +342,7 @@ export default function ProfilePage() {
           <Banner status="warning" title="后端未连接" description="连接后端后才能查看和新增餐食记录；当前为 Mock 模式。" />
         ) : null}
 
-        {tab === "records" ? (
+        {embedded || tab === "records" ? (
           <div className="meal-filters">
             <div className="meal-filter-chips">
               {(["全部", "早餐", "午餐", "晚餐", "加餐"] as const).map((label) => (
@@ -325,7 +368,7 @@ export default function ProfilePage() {
           </div>
         ) : null}
 
-        {tab === "records" ? (
+        {embedded || tab === "records" ? (
           <>
             {meals.length === 0 ? (
               <div className="profile-empty">
@@ -430,7 +473,16 @@ export default function ProfilePage() {
               </div>
             )}
           </>
-        ) : (
+        ) : null}
+
+        {embedded ? (
+          <div className="health-file-section-head" id="health-trend">
+            <span>03 / 健康趋势</span>
+            <span className="health-file-section-meta">近 14 天</span>
+          </div>
+        ) : null}
+
+        {embedded || tab === "trend" ? (
           <>
             <section className="profile-section">
               <div className="profile-section-head">近 7 天碳水</div>
@@ -451,19 +503,10 @@ export default function ProfilePage() {
               <ByFood meals={meals} />
             </section>
           </>
-        )}
+        ) : null}
       </div>
 
-      <MealLogDialog
-        open={logOpen}
-        title="手动记一顿"
-        dismissLabel="取消"
-        onClose={() => setLogOpen(false)}
-        onSaved={(meal) => {
-          setSaved(`${formatEatenAt(meal.eaten_at)} ${meal.meal_type} · ${foodsText(meal)}`);
-          void refresh();
-        }}
-      />
+      {embedded ? createPortal(dialog, document.body) : dialog}
     </div>
   );
 }

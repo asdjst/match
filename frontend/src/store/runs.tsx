@@ -1,7 +1,3 @@
-/**
- * 会话/运行状态：ChatPage 与 TracePage 共享。
- * 每次提问生成一条 RunState，SSE 事件增量写入；断点 pending 时可放行。
- */
 import {
   createContext,
   useCallback,
@@ -34,6 +30,8 @@ export interface NodeEventLog {
   /** 距上一事件（或提问发起）的毫秒数，端侧计时 */
   durationMs: number;
   at: number;
+  summary?: string;
+  roundNo?: number;
 }
 
 export interface RunState {
@@ -46,6 +44,9 @@ export interface RunState {
   error: string | null;
   deliverable: Deliverable | null;
   nodeEvents: NodeEventLog[];
+  activeNode?: string | null;
+  activeNodeAt?: number | null;
+  pendingHuman?: boolean;
   /** GET /api/tasks 快照里的 node_results（live 在 done 后补拉；mock 直接内置） */
   nodeResults: Record<string, AgentResult> | null;
   /** planner 任务图与全量证据池（快照补拉，供轨迹页展示各阶段产出） */
@@ -90,6 +91,14 @@ interface RunsContextValue {
   history: RunSummary[];
   reloadHistory: () => Promise<void>;
   transportKind: "mock" | "live" | "probing";
+}
+
+function snapshotEvents(snap: TaskSnapshot): NodeEventLog[] {
+  if (snap.node_events) return snap.node_events.filter((event) => event.status === "done").map((event) => ({
+    node: event.node, status: event.status, durationMs: event.elapsed_ms ?? 0,
+    at: event.at ?? 0, summary: event.summary, roundNo: event.round_no,
+  }));
+  return (snap.timings ?? []).map((event) => ({ node: event.node, status: "done", durationMs: event.ms, at: 0 }));
 }
 
 const RunsContext = createContext<RunsContextValue | null>(null);
@@ -210,7 +219,7 @@ export function RunsProvider({ children }: { children: ReactNode }) {
             lastAt = now;
             if (ev.type === "run") runId = ev.run_id;
             // 每个角色跑完补拉一次快照：思考过程要显示这一步产出了什么
-            if (ev.type === "node" && runId) syncSnapshot(runId);
+            if (ev.type === "node" && ev.status === "done" && runId) syncSnapshot(runId);
           }
           patchRun(key, (r) => finalize(r, transport));
         } catch (err) {
@@ -238,16 +247,20 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       patchRun(key, (r) => ({ ...r, approving: true }));
       try {
         const { deliverable } = await transportRef.current.approve(run.runId);
-        let final = deliverable;
-        if (!final) {
-          const snap = await transportRef.current.getTask(run.runId);
-          final = snap?.deliverable ?? null;
-        }
+        const snap = await transportRef.current.getTask(run.runId);
+        const final = deliverable ?? snap?.deliverable;
         patchRun(key, (r) => ({
           ...r,
           approved: true,
           approving: false,
+          pendingHuman: !final,
+          activeNode: null,
+          error: null,
           deliverable: final ?? r.deliverable,
+          nodeEvents: snap?.node_events ? snapshotEvents(snap) : r.nodeEvents,
+          nodeResults: snap?.node_results ?? r.nodeResults,
+          verdict: snap?.verdict ?? r.verdict,
+          roundNo: snap?.round_no ?? r.roundNo,
           phase: final ? "done" : r.phase,
           finishedAt: final ? Date.now() : r.finishedAt,
         }));
@@ -280,11 +293,12 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       runId,
       question: snap.question ?? "",
       sessionId: sessionId || snap.session_id || "",
-      phase: snap.pending_human ? "interrupted" : "done",
+      phase: snap.pending_human ? "interrupted" : snap.deliverable ? "done" : "error",
       guard: null,
-      error: null,
+      error: snap.error ?? null,
+      pendingHuman: snap.pending_human,
       deliverable: snap.deliverable,
-      nodeEvents: [],
+      nodeEvents: snapshotEvents(snap),
       nodeResults: snap.node_results,
       dag: snap.dag,
       evidencePool: snap.evidence,
@@ -302,7 +316,7 @@ export function RunsProvider({ children }: { children: ReactNode }) {
             }
           : undefined,
       startedAt,
-      finishedAt: startedAt,
+      finishedAt: startedAt + (snap.duration_ms ?? 0),
     };
   }, []);
 
@@ -426,19 +440,27 @@ function reduceEvent(r: RunState, ev: SseEvent, now: number, deltaMs: () => numb
     case "guard":
       return { ...r, guard: { allowed: ev.allowed, reason: ev.reason } };
     case "node":
+      if (ev.status === "running") {
+        return { ...r, activeNode: ev.node, activeNodeAt: now, roundNo: ev.round_no ?? r.roundNo };
+      }
       return {
         ...r,
+        activeNode: null,
+        activeNodeAt: null,
+        roundNo: ev.round_no ?? r.roundNo,
         nodeEvents: [
           ...r.nodeEvents,
-          { node: ev.node, status: ev.status, durationMs: deltaMs(), at: now },
+          { node: ev.node, status: ev.status, durationMs: ev.elapsed_ms ?? deltaMs(), at: ev.at ?? now, summary: ev.summary, roundNo: ev.round_no },
         ],
       };
     case "deliverable":
       return { ...r, deliverable: ev.deliverable };
     case "error":
-      return { ...r, error: ev.message };
+      return { ...r, error: ev.message, activeNode: null };
+    case "needs_human":
+      return { ...r, pendingHuman: true, activeNode: null };
     case "done":
-      return r;
+      return { ...r, pendingHuman: ev.pending_human ?? r.pendingHuman, activeNode: null };
     default:
       return r;
   }
@@ -461,9 +483,10 @@ function finalize(r: RunState, transport: ChatTransport): RunState {
         });
       });
     }
-    return { ...r, phase: "done", finishedAt };
+    return { ...r, phase: "done", activeNode: null, finishedAt };
   }
-  return { ...r, phase: "interrupted", finishedAt };
+  if (r.pendingHuman) return { ...r, phase: "interrupted", activeNode: null, finishedAt };
+  return { ...r, phase: "error", activeNode: null, error: r.error ?? "连接已结束，但未收到最终回答，请重试。", finishedAt };
 }
 
 // finalize 里异步补拉的出口：直接复用 provider 的 setState 不方便，

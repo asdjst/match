@@ -36,7 +36,13 @@ def test_degraded_with_cached_evidence_when_analyst_down(client, monkeypatch):
         return real(self, prompt, tier, schema)
 
     monkeypatch.setattr(FakeLLM, "complete", analyst_down)
-    d = _deliverable(_chat(client, "公司2024年营业收入是多少？"))
+    events = _chat(client, "公司2024年营业收入是多少？")
+    d = _deliverable(events)
+    snapshot = client.get(f"/api/tasks/{events[0]['run_id']}").json()
+    assert "ConnectionError" in snapshot["error"]
+    assert [e["node"] for e in snapshot["node_events"]] == ["planner", "retriever"]
+    assert any(e.get("node") == "analyst" and e["status"] == "running" for e in events)
+    assert client.app.state.store.get_run(events[0]["run_id"])["error"] == snapshot["error"]
     # 规划/检索已产出证据 → 模板兜底不拒答，但必须降级 + 免责声明 + 引用
     assert d["degraded"] is True
     assert d["refused"] is False
@@ -53,7 +59,11 @@ def test_refused_style_degrade_when_retriever_down(client, monkeypatch):
         raise ConnectionError("R2R 不可达")
 
     monkeypatch.setattr(FakeRetriever, "recall", recall_down)
-    d = _deliverable(_chat(client, "公司2024年营业收入是多少？"))
+    events = _chat(client, "公司2024年营业收入是多少？")
+    d = _deliverable(events)
+    snapshot = client.get(f"/api/tasks/{events[0]['run_id']}").json()
+    assert [e["node"] for e in snapshot["node_events"]] == ["planner"]
+    assert "ConnectionError" in snapshot["error"]
     # 无任何证据 → 降级且拒答式兜底
     assert d["degraded"] is True
     assert d["refused"] is True

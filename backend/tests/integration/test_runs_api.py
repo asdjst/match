@@ -77,8 +77,10 @@ def test_task_lookup_falls_back_to_store_after_cache_cleared(app, client):
         "image_id",
         "food_items",
         "profile",
+        "node_events",
         "timings",
         "duration_ms",
+        "error",
     }
     assert body["run_id"] == "run-2"
     assert body["session_id"] == "s1"
@@ -94,8 +96,12 @@ def test_task_lookup_falls_back_to_store_after_cache_cleared(app, client):
 class _StubGraph:
     """替身图：放行后直接返回兜底交付物，验证 approve 走的是落库快照 + 图恢复。"""
 
-    async def ainvoke(self, command, config):
-        return {
+    async def astream(self, command, config, stream_mode):
+        from langgraph.graph import END, StateGraph
+        from core.graph.builder import _report_node
+        from core.graph.state import GraphState
+
+        result = {
             "deliverable": {
                 "question": STATE["question"],
                 "assertions": [],
@@ -107,6 +113,12 @@ class _StubGraph:
                 "refusal_reason": "已达最大打回轮数（3），人工已放行，输出兜底结论",
             }
         }
+        graph = StateGraph(GraphState)
+        graph.add_node("writer", _report_node("writer", lambda state: result))
+        graph.set_entry_point("writer")
+        graph.add_edge("writer", END)
+        async for chunk in graph.compile().astream({"round_no": 1}, config, stream_mode=stream_mode):
+            yield chunk
 
 
 def test_approve_works_after_cache_cleared(app, client):

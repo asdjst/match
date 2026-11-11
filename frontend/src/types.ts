@@ -148,14 +148,24 @@ export interface Deliverable {
   refusal_reason: string | null;
 }
 
+export interface NodeProgressEvent {
+  node: string;
+  status: "running" | "done";
+  elapsed_ms?: number;
+  summary?: string;
+  round_no?: number;
+  at?: number;
+}
+
 /** SSE 事件（chat.py _sse 的 payload.type 分支，逐字对齐） */
 export type SseEvent =
   | { type: "run"; run_id: string }
-  | { type: "node"; node: string; status: string; elapsed_ms?: number }
+  | ({ type: "node" } & NodeProgressEvent)
   | { type: "guard"; allowed: boolean; reason?: string | null }
   | { type: "deliverable"; deliverable: Deliverable }
   | { type: "error"; message: string }
-  | { type: "done" };
+  | { type: "needs_human"; run_id: string; reason: string; issues?: string[] }
+  | { type: "done"; pending_human?: boolean };
 
 /** AgentResult（core/schemas/agent.py，node_results 的值） */
 export type AgentStatus = "done" | "blocked" | "needs_human";
@@ -215,6 +225,8 @@ export interface TaskSnapshot {
   profile?: Record<string, unknown> | null;
   /** 各图节点耗时与整轮总耗时（毫秒） */
   timings?: { node: string; ms: number }[];
+  node_events?: NodeProgressEvent[];
+  error?: string | null;
   duration_ms?: number | null;
 }
 

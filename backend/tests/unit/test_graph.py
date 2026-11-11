@@ -1,5 +1,7 @@
 """直调 build_graph().invoke：用现成 fakes 验证图路径。"""
 
+import pytest
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
@@ -147,6 +149,125 @@ def test_critic_drops_positive_statements_from_issues():
     assert len(issues) == 5
     assert target == "analyst"
 
+
+@pytest.mark.asyncio
+async def test_node_start_is_live_and_timing_excludes_preparation_and_stream_delay(monkeypatch):
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+    from langgraph.graph import END, StateGraph
+    from core.graph import builder
+    from core.graph.events import NodeEventLog
+    from core.graph.state import GraphState
+
+    clock = [10.0]
+    monkeypatch.setattr(builder, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    release = threading.Event()
+    finished = threading.Event()
+
+    def planner(state):
+        assert release.wait(timeout=5), "start event was not delivered while the node was running"
+        clock[0] += 0.125
+        finished.set()
+        return {"round_no": state["round_no"], "dag": {"nodes": []}}
+
+    g = StateGraph(GraphState)
+    g.add_node("planner", builder._report_node("planner", planner))
+    g.set_entry_point("planner")
+    g.add_edge("planner", END)
+    graph = g.compile()
+    clock[0] += 60  # Preparation is not node execution.
+    log = NodeEventLog()
+    stream = graph.astream({"round_no": 2}, stream_mode=["custom", "updates"])
+    try:
+        mode, payload = await asyncio.wait_for(anext(stream), timeout=5)
+        assert mode == "custom"
+        assert log.custom(payload)["status"] == "running"
+        assert not finished.is_set()
+    finally:
+        release.set()
+    async for mode, payload in stream:
+        if mode == "custom":
+            log.custom(payload)
+        else:
+            clock[0] += 120  # Consumer latency must not inflate elapsed_ms either.
+            done = log.done("planner")
+    assert done["elapsed_ms"] == 125
+    assert done["round_no"] == 2
+    assert done["summary"] == "已完成任务规划，生成 0 项任务。"
+    assert log.snapshot({})["node_events"] == [done]
+    # get_stream_writer remains a no-op for ordinary async invocation.
+    assert (await graph.ainvoke({"round_no": 3}))["round_no"] == 3
+
+
+def test_summaries_exclude_prior_pool_and_skipped_results():
+    from core.graph.events import node_summary
+
+    old_result = {"status": "done", "evidence_used": ["E1"], "retrievals": [{"channel": "local", "hits": 9, "status": "ok"}]}
+    before = {
+        "dag": {"nodes": [{"node_id": "r1", "role": "retriever"}]},
+        "node_results": {"r1": old_result},
+        "evidence": {"E1": {"channel": "local"}, "E2": {"channel": "image"}, "E3": {"channel": "memory"}},
+    }
+    delta = {"node_results": {"r1": old_result}, "evidence": dict(before["evidence"])}
+    summary = node_summary("retriever", delta, {**before, **delta}, before)
+    assert "新增 0 条" in summary and "跳过 1 项" in summary
+    assert "9" not in summary and "通道命中" not in summary
+    # A freshly replaced but equal result is a genuine repeat, not a skipped task.
+    delta["node_results"]["r1"] = dict(old_result)
+    summary = node_summary("retriever", delta, {**before, **delta}, before)
+    assert "新增 0 条" in summary and "本地库 9 条" in summary
+    assert "跳过" not in summary
+
+
+def test_executor_summary_counts_partial_calls_and_only_safe_numeric_results():
+    from core.graph.events import node_summary
+
+    specs = [
+        {"node_id": "x1", "role": "executor", "tool": "calculate_gl"},
+        {"node_id": "x2", "role": "executor", "tool": "growth_rate"},
+        {"node_id": "x3", "role": "executor", "tool": "growth_rate"},
+    ]
+    old = {"status": "done", "output": {"result": 99, "unit": "%"}}
+    before = {"dag": {"nodes": specs}, "node_results": {"x3": old}}
+    delta = {"node_results": {
+        "x1": {"status": "done", "output": {"calls": [
+            {"tool": "calculate_gl", "ok": True, "result": 12.5, "source": "DO_NOT_LEAK"},
+            {"tool": "query_food_nutrition", "ok": False, "error": "DO_NOT_LEAK"},
+        ]}},
+        "x2": {"status": "blocked", "block_reason": "DO_NOT_LEAK"},
+        "x3": old,
+    }}
+    summary = node_summary("executor", delta, {**before, **delta}, before)
+    assert "成功 1 次" in summary and "失败记录 1 次" in summary
+    assert "阻塞 1 项、跳过 1 项" in summary
+    assert "GL 估算值 12.5" in summary
+    assert "99" not in summary and "DO_NOT_LEAK" not in summary
+
+
+def test_analyst_summary_uses_current_assertions_without_exposing_claims():
+    from core.graph.events import node_summary
+
+    before = {"assertions": [{"cites": ["OLD"]}]}
+    delta = {"assertions": [
+        {"text": "DO_NOT_LEAK", "cites": ["E1", "E1"]},
+        {"text": "DO_NOT_LEAK", "cites": ["E1", "E2"]},
+    ]}
+    assert node_summary("analyst", delta, {**before, **delta}, before) == "本轮分析形成 2 条断言，引用 2 个不同证据编号。"
+    assert node_summary("analyst", {"assertions": []}, before, before) == "本轮分析形成 0 条断言，引用 0 个不同证据编号。"
+
+
+@pytest.mark.parametrize("deliverable, expected", [
+    ({"refused": False}, "已生成交付物。"),
+    ({"refused": True}, "已生成拒答结果，未给出正常结论。"),
+    ({"degraded": True}, "已生成降级交付物，不作为完整流程的正常交付。"),
+    ({"degraded": True, "refused": True}, "已生成拒答式降级交付物。"),
+])
+def test_writer_summaries_reflect_actual_disposition(deliverable, expected):
+    from core.graph.events import node_summary
+
+    delta = {"deliverable": deliverable}
+    assert node_summary("writer", delta, delta, {}) == expected
 
 def test_tidy_assertions_dedupes_and_caps():
     from core.graph.nodes.roles import MAX_ASSERTIONS, _tidy_assertions

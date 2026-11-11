@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 
+from core.graph.events import NodeEventLog
 from core.graph.state import GraphState
 from core.schemas.deliverable import Deliverable
 from core.schemas.profile import ProfileIn
@@ -50,9 +51,7 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     async def gen() -> AsyncIterator[str]:
         run_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        t_start = time.monotonic()
-        t_prev = t_start
-        timings: list[dict] = []
+        events = NodeEventLog()
         yield _sse({"type": "run", "run_id": run_id})
 
         trace_id = state.tracer.start("chat", {"run_id": run_id, "session_id": req.session_id, "question": req.question})
@@ -71,13 +70,14 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
                 refused=True,
                 refusal_reason=verdict.reason or "输入被安全策略拦截",
             )
-            state.runs[run_id] = {
+            state.runs[run_id] = events.snapshot({
+                "session_id": req.session_id,
                 "question": req.question,
                 "round_no": 0,
                 "node_results": {},
                 "deliverable": deliverable.model_dump(),
                 "created_at": created_at,
-            }
+            })
             persist(state.runs[run_id])
             state.tracer.event(trace_id, "guard", {"allowed": False, "reason": verdict.reason})
             yield _sse({"type": "guard", "allowed": False, "reason": verdict.reason})
@@ -133,11 +133,17 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
                 "confidence": deliverable.get("confidence"),
                 "run_id": run_id,
             })
-        merged: dict = dict(init)
+        merged: dict = {**init, "created_at": created_at}
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 30}
         interrupted = False
         try:
-            async for chunk in state.graph.astream(init, config, stream_mode="updates"):
+            async for mode, chunk in state.graph.astream(init, config, stream_mode=["custom", "updates"]):
+                if mode == "custom":
+                    event = events.custom(chunk)
+                    if event is not None:
+                        state.runs[run_id] = events.snapshot(merged)
+                        yield _sse(event)
+                    continue
                 if "__interrupt__" in chunk:
                     intr = chunk["__interrupt__"][0]
                     payload = intr.value if isinstance(intr.value, dict) else {"reason": str(intr.value)}
@@ -147,31 +153,27 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
                     break
                 for node, delta in chunk.items():
                     merged.update(delta)
-                    now = time.monotonic()
-                    timings.append({"node": node, "ms": int((now - t_prev) * 1000)})
-                    t_prev = now
-                    # 流式期间也把中间态挂到 runs，前端每个节点事件后拉快照即可实时展示推理进度
-                    state.runs[run_id] = dict(merged)
+                    event = events.done(node)
+                    # Only actual updates enter completion history; interrupted/failed nodes do not.
+                    state.runs[run_id] = events.snapshot(merged)
                     state.tracer.event(trace_id, f"node:{node}", {"status": "done"})
-                    yield _sse(
-                        {"type": "node", "node": node, "status": "done", "elapsed_ms": timings[-1]["ms"]}
-                    )
+                    yield _sse(event)
         except GraphRecursionError:
-            yield _sse({"type": "error", "message": "超过图循环上限"})
+            merged["error"] = "超过图循环上限"
+            state.runs[run_id] = events.snapshot(merged)
+            yield _sse({"type": "error", "message": merged["error"]})
             state.tracer.event(trace_id, "error", {"message": "超过图循环上限"})
         except Exception as e:
             # 模型/检索等组件故障 → 缓存证据模板兜底（W4.4 降级）
             log.exception("run %s 降级兜底", run_id)
             from core.services.degrade import fallback_deliverable
 
+            merged["error"] = f"系统组件故障（{type(e).__name__}）"
             merged["deliverable"] = fallback_deliverable(
-                req.question, merged.get("evidence") or {}, run_id, f"系统组件故障（{type(e).__name__}）"
+                req.question, merged.get("evidence") or {}, run_id, merged["error"]
             ).model_dump()
             state.tracer.event(trace_id, "degraded", {"error": str(e)[:200]})
-        merged["timings"] = timings
-        merged["duration_ms"] = int((time.monotonic() - t_start) * 1000)
-        # 快照里带上创建时间，历史会话回放时消息时间不会变成“现在”
-        merged["created_at"] = created_at
+        merged = events.snapshot(merged)
         if interrupted:
             state.runs[run_id] = merged
             persist(merged)

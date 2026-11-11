@@ -54,6 +54,20 @@ def test_chat_sse_event_order_and_deliverable(client, question):
     assert nodes, "至少经历一个节点"
     assert types == ["run"] + ["node"] * len(nodes) + ["deliverable", "done"]
     assert events[0]["run_id"]
+    node_events = [e for e in events if e["type"] == "node"]
+    for start, end in zip(node_events[::2], node_events[1::2], strict=True):
+        assert set(start) == {"type", "node", "status", "round_no", "at"}
+        assert set(end) == set(start) | {"elapsed_ms", "summary"}
+        assert start["status"] == "running" and end["status"] == "done"
+        assert start["node"] == end["node"]
+        assert start["round_no"] == end["round_no"] == 0
+        assert isinstance(start["at"], int) and start["at"] > 1_700_000_000_000
+        assert end["at"] >= start["at"]
+        assert isinstance(end["elapsed_ms"], int) and end["elapsed_ms"] >= 0
+        assert end["summary"] and len(end["summary"]) < 250
+    if question == CALC_Q:
+        assert {e["node"] for e in node_events} == {"planner", "retriever", "executor", "analyst", "critic", "writer"}
+        assert "20.0%" in next(e["summary"] for e in node_events if e["node"] == "executor" and e["status"] == "done")
 
     d = _deliverable(events)
     # 三类样例问题都应产出带引用的正常交付物
@@ -83,6 +97,11 @@ def test_injection_question_blocked(client):
     d = _deliverable(events)
     assert d["refused"] is True
     assert d["refusal_reason"]
+    run_id = events[0]["run_id"]
+    for snapshot in (client.get(f"/api/tasks/{run_id}").json(), client.app.state.store.get_run(run_id)):
+        assert snapshot["node_events"] == snapshot["timings"] == []
+        assert snapshot["duration_ms"] >= 0
+        assert snapshot["error"] is None
 
 
 def test_out_of_corpus_question_refused(client):
@@ -105,7 +124,7 @@ def _normalize(events):
             continue
         if e["type"] == "node":
             # 耗时是运行时数据，不参与可复现性对比
-            e = {k: v for k, v in e.items() if k != "elapsed_ms"}
+            e = {k: v for k, v in e.items() if k not in {"elapsed_ms", "at"}}
         if e["type"] == "deliverable":
             e = copy.deepcopy(e)
             e["deliverable"].pop("trace_id", None)
@@ -134,6 +153,13 @@ def test_tasks_api_returns_state_and_404(client):
     assert body["node_results"]
     assert "analyst" in body["node_results"]
     assert body["deliverable"]["refused"] is False
+    assert body["node_events"] == [e for e in events if e["type"] == "node" and e["status"] == "done"]
+    assert [t["ms"] for t in body["timings"]] == [e["elapsed_ms"] for e in body["node_events"]]
+    assert body["duration_ms"] >= sum(t["ms"] for t in body["timings"])
+    client.app.state.runs.clear()
+    restored = client.get(f"/api/tasks/{run_id}").json()
+    for key in ("node_events", "timings", "duration_ms", "error"):
+        assert restored[key] == body[key]
 
     missing = client.get(f"/api/tasks/{uuid.uuid4()}")
     # 随机 id 必须是 404
@@ -160,13 +186,28 @@ def test_human_gate_pause_and_approve(client, monkeypatch):
     run_id = next(e["run_id"] for e in events if e["type"] == "run")
 
     # 放行前 GET 应标记 pending；放行后返回兜底交付物
-    assert client.get(f"/api/tasks/{run_id}").json()["pending_human"] is True
+    before = client.get(f"/api/tasks/{run_id}").json()
+    assert before["pending_human"] is True
+    assert not any(e["node"] == "writer" for e in before["node_events"])
+    assert any(e.get("node") == "writer" and e["status"] == "running" for e in events)
+    client.app.state.runs.clear()  # Approval must preserve the SQLite snapshot's history too.
     resp = client.post(f"/api/tasks/{run_id}/approve")
     assert resp.status_code == 200
     d = resp.json()["deliverable"]
     assert d["refused"] is True
     assert d["degraded"] is True
     assert "人工已放行" in d["refusal_reason"]
+    after = client.get(f"/api/tasks/{run_id}").json()
+    assert after["node_events"][:-1] == before["node_events"]
+    assert after["timings"][:-1] == before["timings"]
+    assert after["duration_ms"] >= before["duration_ms"]
+    assert after["node_events"][-1]["node"] == "writer"
+    assert after["node_events"][-1]["summary"] == "已生成拒答式降级交付物。"
+    assert after["pending_human"] is False
+    client.app.state.runs.clear()
+    restored = client.get(f"/api/tasks/{run_id}").json()
+    for key in ("node_events", "timings", "duration_ms", "error"):
+        assert restored[key] == after[key]
 
     # 已放行的任务不能重复放行
     assert client.post(f"/api/tasks/{run_id}/approve").status_code == 409
@@ -196,6 +237,117 @@ def test_chat_keeps_multi_turn_memory_and_store_fallback(tmp_path):
     restored = app.state.store.history("s1", last=2)
     assert [h["question"] for h in restored] == [FACTUAL_Q, "那2023年呢？"]
     assert restored[0]["answer"] == history[0]["answer"]
+
+
+def test_repeated_nodes_have_iteration_specific_summaries(client, monkeypatch):
+    from adapters.llm.fake import FakeLLM
+    from core.schemas.agent import CriticOutput
+    from core.schemas.evidence import Evidence
+
+    original = FakeLLM.complete
+    reviews = 0
+
+    def review(self, prompt, tier, schema=None):
+        nonlocal reviews
+        if schema is CriticOutput:
+            reviews += 1
+            if reviews == 1:
+                return CriticOutput(verdict="send_back", issues=["需补充来源"], send_back_to="retriever")
+        return original(self, prompt, tier, schema)
+
+    monkeypatch.setattr(FakeLLM, "complete", review)
+    retriever = client.app.state.retriever
+    retrievals = 0
+    local = Evidence(doc_id="annual", quote="公司2024年营业收入为120亿元。", score=0.95)
+    web = Evidence(doc_id="web", quote="公司2023年营业收入为100亿元。", score=0.95, channel="web")
+
+    def recall(query, filters=None):
+        nonlocal retrievals
+        retrievals += 1
+        retriever.last_report = [
+            {"channel": "local", "hits": 1, "status": "ok"},
+            {"channel": "web", "hits": 0 if retrievals == 1 else 2, "status": "ok"},
+        ]
+        return [local] if retrievals == 1 else [local, web, web]
+
+    monkeypatch.setattr(retriever, "recall", recall)
+    events = _chat(client, FACTUAL_Q)
+    completed = [e for e in events if e.get("status") == "done"]
+    retrieval_events = [e for e in completed if e["node"] == "retriever"]
+    assert [e["round_no"] for e in retrieval_events] == [0, 1]
+    assert "新增 1 条去重证据（本地库 1 条）" in retrieval_events[0]["summary"]
+    assert "新增 1 条去重证据（网页 1 条）" in retrieval_events[1]["summary"]
+    assert "本次通道命中：本地库 1 条、网页 2 条" in retrieval_events[1]["summary"]
+    critics = [e for e in completed if e["node"] == "critic"]
+    assert "返工" in critics[0]["summary"] and "通过" in critics[1]["summary"]
+    assert [e["round_no"] for e in critics] == [0, 1]
+    run_id = events[0]["run_id"]
+    assert client.app.state.store.get_run(run_id)["node_events"] == completed
+
+
+def test_approve_preserves_completions_before_resume_failure(client):
+    from langgraph.graph import END, StateGraph
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import interrupt
+    from core.graph.builder import _report_node
+    from core.graph.state import GraphState
+
+    def retrieve(state):
+        interrupt({"reason": "offline approval test"})
+        return {"evidence": {}, "node_results": {}}
+
+    def fail(state):
+        raise ConnectionError("DO_NOT_LEAK")
+
+    graph = StateGraph(GraphState)
+    graph.add_node("planner", _report_node("planner", lambda state: {"dag": {"nodes": []}}))
+    graph.add_node("retriever", _report_node("retriever", retrieve))
+    graph.add_node("analyst", _report_node("analyst", fail))
+    graph.set_entry_point("planner")
+    graph.add_edge("planner", "retriever")
+    graph.add_edge("retriever", "analyst")
+    graph.add_edge("analyst", END)
+    client.app.state.graph = graph.compile(checkpointer=MemorySaver())
+    events = _chat(client, FACTUAL_Q)
+    run_id = events[0]["run_id"]
+    before = client.get(f"/api/tasks/{run_id}").json()
+    assert [e["node"] for e in before["node_events"]] == ["planner"]
+    assert client.post(f"/api/tasks/{run_id}/approve").status_code == 409
+    after = client.get(f"/api/tasks/{run_id}").json()
+    assert [e["node"] for e in after["node_events"]] == ["planner", "retriever"]
+    assert after["node_events"][0] == before["node_events"][0]
+    assert after["timings"][0] == before["timings"][0]
+    assert after["error"] == "恢复执行失败（ConnectionError）"
+    assert after["deliverable"] is None
+    assert after["pending_human"] is False
+    assert "DO_NOT_LEAK" not in json.dumps(after)
+    client.app.state.runs.clear()
+    restored = client.get(f"/api/tasks/{run_id}").json()
+    for key in ("node_events", "timings", "duration_ms", "error"):
+        assert restored[key] == after[key]
+
+
+def test_recursion_fault_is_persisted_without_false_completion(client, monkeypatch):
+    from adapters.llm.fake import FakeLLM
+    from langgraph.errors import GraphRecursionError
+
+    original = FakeLLM.complete
+
+    def fail(self, prompt, tier, schema=None):
+        if prompt.role == "analyst":
+            raise GraphRecursionError("offline recursion fault")
+        return original(self, prompt, tier, schema)
+
+    monkeypatch.setattr(FakeLLM, "complete", fail)
+    events = _chat(client, FACTUAL_Q)
+    run_id = events[0]["run_id"]
+    assert any(e["type"] == "error" for e in events)
+    before = client.get(f"/api/tasks/{run_id}").json()
+    assert before["error"] == "超过图循环上限"
+    assert before["deliverable"] is None
+    assert [e["node"] for e in before["node_events"]] == ["planner", "retriever"]
+    client.app.state.runs.clear()
+    assert client.get(f"/api/tasks/{run_id}").json()["error"] == before["error"]
 
 
 def test_health_endpoint(client):

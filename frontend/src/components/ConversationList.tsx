@@ -1,7 +1,6 @@
 /** 左侧会话历史：按 session 归组，点开回到那段对话继续追问。 */
 import { useEffect, useState } from "react";
 import { useRuns, type Conversation } from "../store/runs";
-import { useUi } from "../store/ui";
 
 const OPEN_KEY = "glucoguard.historyOpen";
 
@@ -27,7 +26,6 @@ const CHEVRON = (
 
 export function ConversationList() {
   const { conversations, activeSessionId, openConversation, newConversation } = useRuns();
-  const { setPage } = useUi();
   const [open, setOpen] = useState(() => {
     try {
       return localStorage.getItem(OPEN_KEY) !== "0";
@@ -46,12 +44,10 @@ export function ConversationList() {
 
   const pick = (conversation: Conversation) => {
     void openConversation(conversation);
-    setPage("chat");
   };
 
   const create = () => {
     newConversation();
-    setPage("chat");
   };
 
   const visible = conversations.slice(0, 30);

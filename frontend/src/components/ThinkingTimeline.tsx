@@ -1,7 +1,3 @@
-/**
- * 执行步骤推导：把 SSE 节点事件与任务快照揉成六角色状态，
- * 供会话内联轨迹（RunTrace）逐步点亮。
- */
 import type { RunState } from "../store/runs";
 import { GRAPH_NODES, type Channel, type GraphNodeName } from "../types";
 
@@ -15,40 +11,37 @@ export interface Step {
   detail: string | null;
 }
 
-const RUNNING_HINT: Record<GraphNodeName, string> = {
-  planner: "正在把问题拆成任务图",
-  retriever: "正在检索本地库与 Web",
-  executor: "正在调用工具计算",
-  analyst: "正在把证据写成带引用的断言",
-  critic: "正在核验断言是否有证据支撑",
-  writer: "正在评分并生成交付物",
+export const RUNNING_HINT: Record<GraphNodeName, string> = {
+  planner: "把你的问题拆成可执行的任务，确定需要查找和计算的内容。",
+  retriever: "查找与问题相关的资料，整理可追溯的来源。",
+  executor: "调用工具核算数据，为建议补充计算依据。",
+  analyst: "结合现有证据整理建议，并为每条建议关联来源。",
+  critic: "检查建议与证据是否一致，必要时交回补充。",
+  writer: "整理最终回答与引用，并评估回答的置信度。",
 };
 
-function nextNode(run: RunState, last: GraphNodeName | undefined): GraphNodeName | null {
-  if (run.phase !== "streaming") return null;
-  if (!last) return "planner";
-  switch (last) {
-    case "planner":
-      return "retriever";
-    case "retriever": {
-      const executorDone = run.nodeEvents.some((e) => e.node === "executor");
-      const hasExecutor = run.dag?.nodes.some((n) => n.role === "executor");
-      return hasExecutor && !executorDone ? "executor" : "analyst";
-    }
-    case "executor":
-      return "analyst";
-    case "analyst":
-      return "critic";
-    case "critic": {
-      const out = (run.nodeResults?.["critic"]?.output ?? run.verdict) as
-        | { verdict?: string }
-        | null
-        | undefined;
-      return out?.verdict === "send_back" ? "retriever" : "writer";
-    }
-    default:
-      return null;
+export const STEP_LABEL: Record<GraphNodeName, string> = {
+  planner: "规划任务", retriever: "检索取证", executor: "工具计算",
+  analyst: "分析建议", critic: "审校核验", writer: "生成回答",
+};
+
+export function isGraphNode(node: string): node is GraphNodeName {
+  return GRAPH_NODES.some((name) => name === node);
+}
+
+export function executionEntries(run: RunState) {
+  if (run.nodeEvents.length) {
+    const counts = new Map<string, number>();
+    return run.nodeEvents.filter((event) => event.status === "done" && isGraphNode(event.node)).map((event, i) => {
+      const count = (counts.get(event.node) ?? 0) + 1;
+      counts.set(event.node, count);
+      return { ...event, node: event.node as GraphNodeName, key: `${run.key}-${i}`, count };
+    });
   }
+  return buildSteps(run).filter((step) => step.status === "done").map((step) => ({
+    key: `${run.key}-${step.node}`, node: step.node, durationMs: 0, count: 1,
+    summary: "该步骤已完成；这条旧记录未保存逐步反馈。",
+  }));
 }
 
 function formatValue(value: unknown): string {
@@ -117,15 +110,14 @@ function snapshotDone(run: RunState, node: GraphNodeName): boolean {
     case "planner":
       return Boolean(run.dag);
     case "retriever":
-      return roles.includes("retriever");
     case "executor":
-      return roles.includes("executor");
+      return roles.includes(node) && Boolean(run.dag?.nodes.some((n) => n.role === node && run.nodeResults?.[n.node_id]?.status === "done"));
     case "analyst":
       return Boolean(run.nodeResults?.["analyst"]);
     case "critic":
       return Boolean(run.nodeResults?.["critic"]);
     case "writer":
-      return Boolean(run.deliverable);
+      return Boolean(run.deliverable && !run.deliverable.refused && !run.deliverable.degraded);
   }
 }
 
@@ -135,13 +127,12 @@ export function buildSteps(run: RunState): Step[] {
     const cur = stats.get(e.node) ?? { count: 0, ms: 0 };
     stats.set(e.node, { count: cur.count + 1, ms: cur.ms + e.durationMs });
   }
-  const last = run.nodeEvents[run.nodeEvents.length - 1]?.node as GraphNodeName | undefined;
-  const running = nextNode(run, last);
+  const running = run.phase === "streaming" ? run.activeNode : run.approving ? "writer" : null;
   return GRAPH_NODES.map((node) => {
     const seen = stats.get(node);
     const skipped = node === "executor" && run.dag != null && !run.dag.nodes.some((n) => n.role === "executor");
     // 人工放行不经过 SSE 节点事件，有交付物即视为 writer 已完成
-    const writerDone = node === "writer" && run.deliverable != null;
+    const writerDone = node === "writer" && run.approved && run.deliverable != null;
     let status: StepStatus = seen || writerDone || snapshotDone(run, node) ? "done" : "pending";
     if (skipped) status = "skipped";
     if (running === node) status = "running";

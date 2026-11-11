@@ -444,9 +444,11 @@ export const mockTransport: ChatTransport = {
       yield { type: "guard", allowed: false, reason: scenario.guard.reason };
     }
     for (const step of scenario.steps) {
+      yield { type: "node", node: step.node, status: "running" };
       await sleep(step.ms);
       if (signal.aborted) return;
-      yield { type: "node", node: step.node, status: "done" };
+      state.deliveredEvents += 1;
+      yield { type: "node", node: step.node, status: "done", elapsed_ms: step.ms, summary: "演示步骤已完成，此处为模拟执行反馈。" };
     }
     if (scenario.deliverable) {
       await sleep(350);
@@ -454,7 +456,7 @@ export const mockTransport: ChatTransport = {
       yield { type: "deliverable", deliverable: scenario.deliverable };
     }
     state.finished = true;
-    yield { type: "done" };
+    yield { type: "done", pending_human: !scenario.deliverable };
   },
 
   async getTask(runId) {

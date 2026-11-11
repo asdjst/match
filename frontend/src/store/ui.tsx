@@ -1,15 +1,8 @@
-/**
- * 顶栏级 UI 状态：页签（会话/轨迹）与 dark mode。
- * dark mode 走 <Theme mode> 持久化到 localStorage。
- */
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
-export type PageKey = "chat" | "profile" | "audit";
 export type ColorMode = "light" | "dark";
 
 interface UiContextValue {
-  page: PageKey;
-  setPage: (p: PageKey) => void;
   mode: ColorMode;
   setMode: (m: ColorMode) => void;
 }
@@ -29,7 +22,6 @@ function initialMode(): ColorMode {
 }
 
 export function UiProvider({ children }: { children: ReactNode }) {
-  const [page, setPage] = useState<PageKey>("chat");
   const [mode, setMode] = useState<ColorMode>(initialMode);
 
   useEffect(() => {
@@ -38,8 +30,6 @@ export function UiProvider({ children }: { children: ReactNode }) {
   }, [mode]);
 
   const value: UiContextValue = {
-    page,
-    setPage,
     mode,
     setMode: (m) => {
       setMode(m);
