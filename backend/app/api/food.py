@@ -2,10 +2,11 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
+from app.api.deps import current_user
 from core.schemas.food import FoodAnalysis
 
 router = APIRouter()
@@ -28,7 +29,7 @@ def _suffix_for(data: bytes) -> str | None:
     return None
 
 
-@router.post("/api/food/analyze", response_model=FoodAnalysis)
+@router.post("/api/food/analyze", response_model=FoodAnalysis, dependencies=[Depends(current_user)])
 async def analyze_food(request: Request, file: UploadFile = File(...)) -> FoodAnalysis:
     data = await file.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
@@ -48,7 +49,8 @@ async def analyze_food(request: Request, file: UploadFile = File(...)) -> FoodAn
 
 @router.get("/api/food/images/{image_id}")
 async def get_food_image(image_id: str, request: Request) -> FileResponse:
-    """回放餐盘照片：只接受本服务生成的 32 位随机 ID，不接受任意路径。"""
+    """回放餐盘照片：只接受本服务生成的 32 位随机 ID，不接受任意路径。
+    ID 是 128 位随机值且只经归属校验后的接口下发，故此处按能力 URL 处理——<img> 带不了令牌。"""
     if not _IMAGE_ID.fullmatch(image_id):
         raise HTTPException(404, "图片不存在")
     upload_dir = Path(request.app.state.upload_dir)

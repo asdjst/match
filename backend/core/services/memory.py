@@ -1,10 +1,14 @@
+from core.services.citation import CITE_RE
+
+
 def answer_snippet(deliverable: dict | None, limit: int = 160) -> str:
     """把交付物压成一句可回填的答案摘要（拒答保留原因）。"""
     d = deliverable or {}
     if d.get("refused"):
         return f"（拒答）{d.get('refusal_reason') or ''}"[:limit]
-    texts = [a.get("text", "") for a in d.get("assertions") or []]
-    return "；".join(t for t in texts if t)[:limit]
+    # 回填用户真正读到的成文回答；编号对下一轮规划没用，去掉省字数
+    text = d.get("answer") or "；".join(a.get("text", "") for a in d.get("assertions") or [] if a.get("text"))
+    return CITE_RE.sub("", text)[:limit]
 
 
 class SessionMemory:

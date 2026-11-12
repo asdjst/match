@@ -98,8 +98,9 @@ def test_photo_flow_produces_image_citations(client):
     assert deliverable["confidence"] > 0
     assert deliverable["citations"]
     channels = {c["channel"] for c in deliverable["citations"]}
-    # 拍照证据 + 食物成分/GL 工具证据都要能进引用表
-    assert channels == {"image", "tool"}
+    # 拍照证据 + 食物成分/GL 工具证据都要能进引用表；命中知识卡时还会带 local
+    assert {"image", "tool"} <= channels
+    assert channels <= {"image", "tool", "local"}
     assert any(c["source"]["file_path"] == f"photo://{analysis['image_id']}" for c in deliverable["citations"])
     assert any(c["source"]["file_path"] == "tool://calculate_gl" for c in deliverable["citations"])
 

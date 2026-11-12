@@ -2,7 +2,22 @@ from adapters.llm.fake import FakeLLM
 from core.graph.nodes.roles import make_planner, make_retriever
 from core.schemas.dag import NodeSpec, TaskDAG
 from core.schemas.evidence import Evidence
-from core.services.memory import SessionMemory
+from core.services.memory import SessionMemory, answer_snippet
+
+
+def test_answer_snippet_prefers_composed_answer_without_cite_markers():
+    d = {
+        "answer": "上次那 150 克冰激凌之后血糖到了 18[E1]。这次减到 75 克[E1][E2]。",
+        "assertions": [{"text": "上次吃了约150克冰激凌。"}, {"text": "这次减到75克。"}],
+    }
+
+    assert answer_snippet(d) == "上次那 150 克冰激凌之后血糖到了 18。这次减到 75 克。"
+
+
+def test_answer_snippet_falls_back_to_assertions_and_keeps_refusal_reason():
+    assert answer_snippet({"assertions": [{"text": "碳水约25.9g"}, {"text": ""}]}) == "碳水约25.9g"
+    assert answer_snippet({"refused": True, "refusal_reason": "证据不足", "answer": "不该被用到"}) == "（拒答）证据不足"
+    assert answer_snippet(None) == ""
 
 
 def test_append_and_history():
@@ -42,20 +57,20 @@ def test_planner_prompt_includes_history_but_keeps_question():
 
     out = make_planner(llm)(
         {
-            "question": "那2023年呢？",
+            "question": "那馒头呢？",
             "round_no": 0,
-            "history": [{"question": "公司2024年营业收入是多少？", "answer": "120亿元"}],
+            "history": [{"question": "一碗米饭大概多少碳水？", "answer": "约25.9g/100g"}],
         }
     )
 
     prompt = llm.prompts[0]
     assert "对话历史" in prompt.task
     assert "不得当作证据" in prompt.task
-    assert "公司2024年营业收入是多少？" in prompt.task
-    assert prompt.task.rstrip().endswith("QUESTION: 那2023年呢？")
+    assert "一碗米饭大概多少碳水？" in prompt.task
+    assert prompt.task.rstrip().endswith("QUESTION: 那馒头呢？")
     assert "指代" in prompt.format_hint
     # FakeLLM 原样回填，真实 planner 会按提示改写
-    assert out["dag"]["question"] == "那2023年呢？"
+    assert out["dag"]["question"] == "那馒头呢？"
 
 
 class EchoPort:
@@ -69,10 +84,10 @@ class EchoPort:
 
 
 def test_retriever_uses_rewritten_dag_question():
-    dag = TaskDAG(question="公司2023年营业收入是多少？", nodes=[NodeSpec(node_id="r1", role="retriever")])
+    dag = TaskDAG(question="一碗馒头大概多少碳水？", nodes=[NodeSpec(node_id="r1", role="retriever")])
     port = EchoPort()
     state = {
-        "question": "那2023年呢？",
+        "question": "那馒头呢？",
         "round_no": 0,
         "dag": dag.model_dump(),
         "evidence": {},
@@ -82,4 +97,4 @@ def test_retriever_uses_rewritten_dag_question():
     make_retriever(port)(state)
 
     # 节点没有单独 query 时，优先用 planner 消解指代后的 dag.question
-    assert port.queries == ["公司2023年营业收入是多少？"]
+    assert port.queries == ["一碗馒头大概多少碳水？"]

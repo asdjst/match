@@ -77,6 +77,11 @@ class VlmFoodAnalyzer:
         if known is not None:
             per_100g = float(known["carbs_per_100g"])
             basis = f"中国食物成分表：约{per_100g:g}g 碳水/100g"
+            if known["gi"] is None:
+                basis += "；GI 未收录，不估算 GL"
+        elif per_100g > 0:
+            # 库里没有的食物只能用模型自报值，必须标明是估算，不能冒充成分表数据
+            basis = f"模型估算：约{per_100g:g}g 碳水/100g（食物库未收录，请自行核对）"
         try:
             return FoodItem(
                 name=name,

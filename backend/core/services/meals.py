@@ -47,6 +47,17 @@ def _empty_day_evidence(target: date, label: str, has_any: bool) -> Evidence:
     )
 
 
+def _empty_archive_evidence() -> Evidence:
+    """新用户问自己的历史时也要有据可依：给一条“还没有记录”，而不是让整轮变成无引用拒答。"""
+    return Evidence(
+        doc_id="meal-empty",
+        quote="个人记录：健康档案还没有任何餐食记录，无法回答与本人饮食或血糖历史相关的问题",
+        score=1.0,
+        source=SourceRef(file_path="个人餐食记录"),
+        channel="memory",
+    )
+
+
 def _meal_time(eaten_at: str) -> str:
     """ISO 本地时间 → “2026-11-08 12:30”；解析失败就原样截断。"""
     text = (eaten_at or "").replace("T", " ")
@@ -63,7 +74,7 @@ def _foods_text(foods: list[dict]) -> str:
         piece = f"{name} 约{grams:g}g" if isinstance(grams, (int, float)) and grams > 0 else name
         carbs = food.get("carbs_g")
         if isinstance(carbs, (int, float)):
-            piece += f"（碳水约{carbs:g}g）"
+            piece += f"（碳水约{carbs:g}g{'，食物库估算' if food.get('estimated') else ''}）"
         parts.append(piece)
     return "、".join(parts)
 
@@ -270,6 +281,8 @@ def memory_evidences(
         if cue and target_foods:
             check = _check_evidence(meals, target_foods)
             return [check] if check else []
+        if cue or _stats_kind(question):
+            return [_empty_archive_evidence()]
         return []
 
     if day_list and day:
@@ -308,3 +321,25 @@ def memory_evidences(
         if check is not None:
             evidences.insert(0, check)
     return evidences
+
+
+def recent_glucose_values(store: MealStore, user_id: str, days: int = 14) -> list[float]:
+    """最近 days 天的个人血糖读数，按测量时间升序。
+
+    给 glucose_summary 工具当确定性入参：数值直接来自记录表，
+    不从证据文本里正则抠数，也不让模型自己填。
+    """
+    if not user_id:
+        return []
+    start = date.today() - timedelta(days=days - 1)
+    rows: list[tuple[str, float]] = []
+    for meal in store.list_meals(user_id, limit=200):
+        day = _meal_date(meal.get("eaten_at", ""))
+        if day is None or day < start:
+            continue
+        for reading in meal.get("readings") or []:
+            value = reading.get("value_mmol")
+            if value is not None:
+                rows.append((reading.get("measured_at") or "", float(value)))
+    rows.sort(key=lambda item: item[0])
+    return [value for _, value in rows]

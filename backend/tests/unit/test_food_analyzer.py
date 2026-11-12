@@ -29,6 +29,27 @@ def test_totals_and_conservative_confidence(monkeypatch, tmp_path):
     assert out.confidence == 0.4
 
 
+def test_unknown_food_carbs_are_labelled_as_model_estimate(monkeypatch, tmp_path):
+    image = tmp_path / "meal.jpg"
+    image.write_bytes(b"\xff\xd8\xff")
+
+    analyzer = _analyzer()
+    monkeypatch.setattr(analyzer, "_extract", lambda path: [
+        {"name": "红油汤底", "grams_low": 50, "grams_high": 100, "carbs_per_100g": 4.0,
+         "confidence": 0.5, "basis": "中国食物成分表"},
+        {"name": "莲藕", "grams_low": 60, "grams_high": 70, "carbs_per_100g": 12.0, "confidence": 0.7},
+    ])
+    out = analyzer.analyze("img4", image)
+
+    broth, lotus = out.items
+    # 库外食物：模型自报的“成分表”出处不可信，改标为估算
+    assert "模型估算" in broth.basis and "食物库未收录" in broth.basis
+    assert broth.carbs_g_low == 2.0
+    # 库内食物：碳水以成分表为准（16.4g/100g），GI 未收录要写清楚
+    assert lotus.carbs_g_low == 9.8 and lotus.carbs_g_high == 11.5
+    assert "16.4" in lotus.basis and "GI 未收录" in lotus.basis
+
+
 def test_vlm_failure_degrades_to_manual_input(monkeypatch, tmp_path):
     image = tmp_path / "meal.jpg"
     image.write_bytes(b"\xff\xd8\xff")

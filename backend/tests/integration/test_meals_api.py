@@ -16,7 +16,6 @@ def client(tmp_path):
 
 def _create(client, **overrides):
     body = {
-        "user_id": "u1",
         "eaten_at": "2026-11-08T12:30",
         "meal_type": "午餐",
         "foods": [{"name": "米饭", "grams": 150, "carbs_g": 39, "gl": 32.4}],
@@ -33,7 +32,7 @@ def test_create_list_and_glucose(client):
     meal = _create(client)
     meal_id = meal["meal_id"]
 
-    listed = client.get("/api/meals", params={"user_id": "u1"}).json()["meals"]
+    listed = client.get("/api/meals").json()["meals"]
     assert [m["meal_id"] for m in listed] == [meal_id]
 
     resp = client.post(f"/api/meals/{meal_id}/glucose", json={"value_mmol": 10.2, "minutes_after": 120})
@@ -57,13 +56,47 @@ def test_create_list_and_glucose(client):
     assert client.get(f"/api/meals/{meal_id}").json()["meal"]["readings"] == []
 
     assert client.delete(f"/api/meals/{meal_id}").status_code == 200
-    assert client.get("/api/meals", params={"user_id": "u1"}).json()["meals"] == []
+    assert client.get("/api/meals").json()["meals"] == []
 
 
 def test_missing_meal_returns_404(client):
     assert client.patch("/api/meals/nope", json={"note": "x"}).status_code == 404
     assert client.post("/api/meals/nope/glucose", json={"value_mmol": 7.0}).status_code == 404
     assert client.delete("/api/meals/nope").status_code == 404
+
+
+def test_carbs_auto_filled_when_only_name_and_grams(client):
+    meal = _create(client, foods=[{"name": "冰激凌", "grams": 150}])
+    assert meal["carbs_g"] == 25.9
+    assert meal["gl"] is None  # GI 未收录，整餐 GL 不猜
+    assert meal["foods"][0]["carbs_g"] == 25.9
+    assert meal["foods"][0]["estimated"] is True
+
+
+def test_user_entered_carbs_not_overwritten(client):
+    meal = _create(client, foods=[{"name": "米饭", "grams": 150, "carbs_g": 45}])
+    assert meal["foods"][0]["carbs_g"] == 45
+    assert meal["foods"][0]["estimated"] is False
+    assert meal["carbs_g"] == 45
+
+
+def test_unknown_food_stays_empty(client):
+    meal = _create(client, foods=[{"name": "红油汤底", "grams": 50}])
+    assert meal["carbs_g"] is None
+    assert meal["foods"][0]["carbs_g"] is None
+
+
+def test_patch_recomputes_carbs(client):
+    meal = _create(client, foods=[{"name": "红油汤底", "grams": 50}])
+    resp = client.patch(
+        f"/api/meals/{meal['meal_id']}",
+        json={"foods": [{"name": "米饭", "grams": 200}], "meal_type": "晚餐"},
+    )
+    assert resp.status_code == 200, resp.text
+    patched = resp.json()["meal"]
+    assert patched["meal_type"] == "晚餐"
+    assert patched["carbs_g"] == 51.8 and patched["gl"] == 43.0
+    assert patched["foods"][0]["estimated"] is True
 
 
 def test_chat_pulls_personal_record_into_evidence_pool(client):
@@ -73,7 +106,7 @@ def test_chat_pulls_personal_record_into_evidence_pool(client):
 
     resp = client.post(
         "/api/chat",
-        json={"session_id": "s1", "user_id": "u1", "question": "我上次吃米饭血糖怎么样"},
+        json={"session_id": "s1", "question": "我上次吃米饭血糖怎么样"},
     )
     assert resp.status_code == 200
     events = [json.loads(line[6:]) for line in resp.text.splitlines() if line.startswith("data: ")]
