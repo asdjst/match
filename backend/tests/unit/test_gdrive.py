@@ -42,7 +42,7 @@ def test_missing_key_disabled_and_empty():
     r = GDriveRetriever("")
     # 未配置 api_key → enabled False 且不发起任何请求
     assert r.enabled is False
-    assert r.recall("公司营收") == []
+    assert r.recall("米饭碳水") == []
 
 
 def test_google_doc_exported_to_cloud_evidence():
@@ -50,21 +50,21 @@ def test_google_doc_exported_to_cloud_evidence():
         [
             {
                 "id": "doc-1",
-                "name": "季度报告",
+                "name": "营养门诊记录",
                 "mimeType": "application/vnd.google-apps.document",
             }
         ],
-        export_text="  报告正文内容  ",
+        export_text="  门诊记录正文  ",
     )
     r = _retriever("fake-key", http)
 
-    hits = r.recall("营收")
+    hits = r.recall("米饭碳水")
 
     assert len(hits) == 1
     ev = hits[0]
     assert ev.channel == "cloud"
     assert ev.doc_id == "drive:doc-1"
-    assert ev.quote == "报告正文内容"
+    assert ev.quote == "门诊记录正文"
     assert ev.source.file_path.startswith("drive://")
     # Google Docs 走 export 接口，导出为纯文本
     export_calls = [c for c in http.calls if "/export" in c[0]]
@@ -76,7 +76,7 @@ def test_search_request_carries_key_and_fulltext_query():
     http = FakeHttp([])
     r = _retriever("secret-key", http)
 
-    r.recall("公司营收 2024")
+    r.recall("米饭碳水 每100g")
 
     url, params = http.calls[0]
     assert url == GDriveRetriever.SEARCH_URL
@@ -94,7 +94,7 @@ def test_unsupported_mime_skipped():
     )
     r = _retriever("fake-key", http)
 
-    hits = r.recall("营收")
+    hits = r.recall("米饭碳水")
 
     # 不支持的 MIME（压缩包）→ 跳过；只有 Google Docs 生成 Evidence
     assert [h.doc_id for h in hits] == ["drive:doc-2"]

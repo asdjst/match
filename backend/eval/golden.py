@@ -1,91 +1,138 @@
-"""金标 50 条：从演示语料（scripts/make_demo_assets.py 的段落表）确定性生成草标 CSV，
-人工只需复核 human_review 列。expected_sources 用入库元数据的真实定位。
+"""金标 50 条：定位信息直接取自 demo_assets/gluco_knowledge 的知识卡标题，
+生成时校验每个 (文件, 小标题) 真实存在，避免人工标注漂移。
+
+计算类带 context 列（个人血糖读数/代谢档案），评测时注入 state，工具才有确定性入参。
 
 用法: .venv/bin/python eval/golden.py   （生成 eval/golden_50.csv）
 """
 import csv
+import json
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT))
 
-from make_demo_assets import AUDIO_SEGS, PARAS  # noqa: E402
+from adapters.parsing.markdown_parsing import MarkdownParser  # noqa: E402
 
-PDF = "A公司2024年报.pdf"
-IMG = "报表截图.png"
-AUDIO = "业绩说明会.m4a"
+KNOWLEDGE_DIR = ROOT / "demo_assets" / "gluco_knowledge"
+CARDS = {
+    "NUT": "中国2型糖尿病防治指南2020_医学营养治疗_摘编.md",
+    "TARGET": "中国2型糖尿病防治指南2020_血糖控制目标_摘编.md",
+    "GI": "中国糖尿病医学营养治疗指南2022_GI与GL_摘编.md",
+    "HYPO": "低血糖与监测_摘编.md",
+    "FOOD": "常见食物碳水速查_摘编.md",
+    "EIGHT": "成人糖尿病食养指南2023_八条原则_摘编.md",
+    "PLATE": "成人糖尿病食养指南2023_餐盘与进餐顺序_摘编.md",
+    "FIBER": "膳食纤维盐糖_摘编.md",
+}
+_SECTIONS = {
+    name: {p.section for p in MarkdownParser().parse(KNOWLEDGE_DIR / name)}
+    for name in CARDS.values()
+}
 
 Q: list[dict] = []
 
 
-def fact(qid, q, paras, ans, variant="", extra=""):
-    src = " ".join(f"{PDF}#第{p}段" for p in paras)
-    if extra:
-        src = f"{src} {extra}"
-    Q.append({"qid": qid, "qtype": "事实", "question": q, "expected_sources": src, "expected_answer": ans, "variant": variant})
+def src(*refs: tuple[str, str]) -> str:
+    out = []
+    for card, section in refs:
+        name = CARDS[card]
+        if section not in _SECTIONS[name]:
+            raise SystemExit(f"知识卡里没有这个小标题：{name}#{section}")
+        out.append(f"{name}#{section}")
+    return " | ".join(out)
 
 
-# ---- 事实类：数字段（每段 2 个问法）----
-fact("F01", "2024年公司实现营业收入多少亿元？", [87, 92], "120亿元", "", extra=f"{IMG}#第2页")
-fact("F02", "A公司2024年的营业收入是多少？", [87, 92], "120亿元", "改写", extra=f"{IMG}#第2页")
-fact("F03", "2023年公司实现营业收入多少亿元？", [88, 92], "100亿元", "", extra=f"{IMG}#第2页")
-fact("F04", "A公司2023年的营业收入是多少？", [88, 92], "100亿元", "改写", extra=f"{IMG}#第2页")
-fact("F05", "2024年公司毛利率是多少？", [90, 92], "38%", "", extra=f"{IMG}#第2页")
-fact("F06", "2023年公司毛利率是多少？", [90, 92], "35%", "改写", extra=f"{IMG}#第2页")
-fact("F07", "2024年经营活动现金流量净额是多少？", [93], "21亿元")
-fact("F08", "报告期末公司员工总数是多少？", [94], "8600人")
-fact("F09", "公司研发人员占比是多少？", [94], "28%")
-fact("F10", "2024年新增授权专利多少项？", [83], "12项")
-fact("F11", "公司累计授权专利达到多少项？", [83], "86项")
-fact("F12", "前五大客户收入占比是多少？", [84], "42%")
+def add(qid, qtype, question, expected_sources, expected_answer, variant="", context=None):
+    Q.append({
+        "qid": qid,
+        "qtype": qtype,
+        "question": question,
+        "expected_sources": expected_sources,
+        "expected_answer": expected_answer,
+        "variant": variant,
+        "context": json.dumps(context, ensure_ascii=False) if context else "",
+    })
 
-# ---- 事实类：定性段 ----
-fact("F13", "公司董事会对本报告的真实性做了什么保证？", [80], "不存在虚假记载、误导性陈述或重大遗漏")
-fact("F14", "公司本年度围绕什么战略开展工作？", [81], "数字化转型的长期战略")
-fact("F15", "公司主营业务是什么？", [82], "智能设备与配套软件服务的研发、生产与销售")
-fact("F16", "下一年度经营计划做了什么工作？", [86], "可行性研究与风险评估")
-fact("F17", "报告中的前瞻性陈述是否构成对投资者的承诺？", [95], "不构成实质承诺")
-fact("F18", "本报告未经审计部分与已审计财务报告是否存在重大差异？", [85], "不存在重大差异")
 
-# ---- 原因类 ----
-fact("F19", "2024年营业收入增长的主要原因是什么？", [89], "核心产品放量与海外市场拓展")
-fact("F20", "毛利率变化主要受什么影响？", [91], "产品结构与原材料价格波动")
+def fact(qid, question, refs, answer, variant=""):
+    add(qid, "事实", question, src(*refs), answer, variant)
 
-# ---- 事实改写补充 ----
-fact("F21", "公司经营活动现金流量净额情况如何？", [93], "21亿元，同比保持稳健", "改写")
-fact("F22", "报告期末公司有多少员工？", [94], "8600人", "改写")
-fact("F23", "公司专利情况怎么样？", [83], "新增12项，累计86项", "改写")
-fact("F24", "公司客户集中度如何？", [84], "前五大客户收入占比42%", "改写")
-fact("F25", "公司靠什么业务赚钱？", [82], "智能设备与配套软件服务", "改写")
-fact("F26", "未经审计的财务数据和已审计报告有出入吗？", [85], "不存在重大差异", "改写")
 
-# ---- 图像类 ----
-IMG_SRC = f"{IMG}#第2页"
-Q.append({"qid": "I01", "qtype": "图像", "question": "报表截图里2024年营业收入是多少？", "expected_sources": IMG_SRC, "expected_answer": "120亿", "variant": ""})
-Q.append({"qid": "I02", "qtype": "图像", "question": "报表截图里2023年营业收入是多少？", "expected_sources": IMG_SRC, "expected_answer": "100亿", "variant": ""})
-Q.append({"qid": "I03", "qtype": "图像", "question": "报表截图里2024年毛利率是多少？", "expected_sources": IMG_SRC, "expected_answer": "38%", "variant": ""})
-Q.append({"qid": "I04", "qtype": "图像", "question": "报表截图里的表格包含哪两个指标？", "expected_sources": IMG_SRC, "expected_answer": "营业收入、毛利率", "variant": ""})
-Q.append({"qid": "I05", "qtype": "图像", "question": "报表截图对比了哪两个年度？", "expected_sources": IMG_SRC, "expected_answer": "2024 与 2023", "variant": ""})
+# ---- 事实类：食物成分与份量估算 ----
+fact("F01", "一碗米饭大概多少碳水？", [("FOOD", "米饭与杂粮饭"), ("FOOD", "如何估算一碗的碳水")], "熟重150克约39克碳水")
+fact("F02", "150克熟米饭的碳水怎么算出来？", [("FOOD", "如何估算一碗的碳水"), ("FOOD", "米饭与杂粮饭")], "150×25.9÷100≈38.9克", "改写")
+fact("F03", "米饭每100克含多少碳水？", [("FOOD", "米饭与杂粮饭")], "25.9克")
+fact("F04", "米饭的GI大概是多少？", [("FOOD", "米饭与杂粮饭")], "约83")
+fact("F05", "馒头每100克含多少碳水？", [("FOOD", "面食与馒头")], "47.0克")
+fact("F06", "一个中等馒头大概多少碳水？", [("FOOD", "面食与馒头")], "按100克估算约47克", "改写")
+fact("F07", "白粥的碳水和GI是多少？", [("FOOD", "粥与薯类")], "每100克9.9克碳水，GI约78")
+fact("F08", "一碗300克白粥多少碳水？", [("FOOD", "粥与薯类")], "约30克")
+fact("F09", "红薯每100克含多少碳水？", [("FOOD", "粥与薯类")], "20.1克")
+fact("F10", "杂粮饭和糙米饭的GI分别是多少？", [("FOOD", "米饭与杂粮饭")], "杂粮饭约54，糙米饭约55")
 
-# ---- 音频类 ----
-for i, seg in enumerate(AUDIO_SEGS, start=1):
-    Q.append({"qid": f"A0{i}", "qtype": "音频", "question": f"业绩说明会里提到{('收入增长' if i == 1 else '毛利率改善')}的原因是什么？", "expected_sources": f"{AUDIO}#{seg['time_code']}", "expected_answer": seg["text"].replace("本年度", "").replace("主要", "").strip("。"), "variant": ""})
-Q.append({"qid": "A03", "qtype": "音频", "question": "管理层在业绩说明会上谈到了哪些利好因素？", "expected_sources": f"{AUDIO}#03:12 {AUDIO}#07:45", "expected_answer": "收入增长与毛利率改善的原因", "variant": "汇总"})
-Q.append({"qid": "A04", "qtype": "音频", "question": "业绩说明会 03:12 处讲了什么？", "expected_sources": f"{AUDIO}#03:12", "expected_answer": AUDIO_SEGS[0]["text"], "variant": ""})
-Q.append({"qid": "A05", "qtype": "音频", "question": "业绩说明会 07:45 处讲了什么？", "expected_sources": f"{AUDIO}#07:45", "expected_answer": AUDIO_SEGS[1]["text"], "variant": ""})
+# ---- 事实类：GI/GL 口径 ----
+fact("F11", "低GI的界限是多少？", [("GI", "升糖指数 GI 的含义")], "GI≤55为低GI")
+fact("F12", "多高的GI算高GI食物？", [("GI", "升糖指数 GI 的含义")], "GI≥70", "改写")
+fact("F13", "血糖负荷GL怎么计算？", [("GI", "血糖负荷 GL 的含义")], "GL=GI×可利用碳水克数÷100")
+fact("F14", "单次摄入GL多高算高负荷？", [("GI", "血糖负荷 GL 的含义")], "GL≥20为高负荷")
+fact("F15", "低GI食物可以不限量吃吗？", [("GI", "升糖指数 GI 的含义"), ("GI", "个体差异与监测")], "不能，仍要计入全天碳水总量")
+
+# ---- 事实类：营养素与限量 ----
+fact("F16", "碳水供能比建议是多少？", [("NUT", "碳水化合物"), ("EIGHT", "能量适宜与体重管理")], "占总能量45%～60%")
+fact("F17", "蛋白质供能比建议是多少？", [("NUT", "蛋白质")], "占总能量15%～20%")
+fact("F18", "脂肪供能比建议是多少？", [("NUT", "脂肪")], "占总能量20%～30%")
+fact("F19", "每天食盐不超过多少克？", [("NUT", "限制盐、糖和酒"), ("FIBER", "隐形盐")], "不超过5克")
+fact("F20", "每日膳食纤维建议摄入多少？", [("FIBER", "膳食纤维")], "25～30克")
+
+# ---- 事实类：控制目标与监测 ----
+fact("F21", "大多数成年2型糖尿病患者的糖化血红蛋白目标是多少？", [("TARGET", "多数成年患者的控制目标")], "7.0%以下")
+fact("F22", "空腹血糖目标范围是多少？", [("TARGET", "多数成年患者的控制目标")], "4.4～7.0 mmol/L")
+fact("F23", "餐后血糖控制到多少算达标？", [("TARGET", "多数成年患者的控制目标")], "非空腹10.0 mmol/L以下", "改写")
+fact("F24", "低血糖有哪些常见表现？", [("HYPO", "低血糖的常见表现")], "心慌、出汗、手抖、饥饿感、头晕、乏力")
+fact("F25", "意识清醒的低血糖怎么处理？", [("HYPO", "意识清醒时的处理")], "口服15～20克快速吸收碳水，约15分钟后复测")
+fact("F26", "患者意识不清时能喂糖水吗？", [("HYPO", "意识不清时")], "不要强行喂食喂水，立即呼叫急救")
+
+# ---- 事实类：餐盘与食养 ----
+fact("F27", "健康餐盘怎么分配？", [("PLATE", "健康餐盘比例")], "一半蔬菜、四分之一优质蛋白、四分之一主食")
+fact("F28", "进餐顺序有什么建议？", [("PLATE", "推荐进餐顺序")], "先蔬菜，再蛋白质，最后主食")
+fact("F29", "水果什么时候吃、吃多少？", [("PLATE", "水果怎么吃")], "两餐之间，每次约100～200克，并减少当餐主食")
+fact("F30", "全谷物和杂豆应占主食多少？", [("EIGHT", "主食定量与低升糖主食")], "1/3以上")
 
 # ---- 对比类 ----
-Q.append({"qid": "C01", "qtype": "对比", "question": "2024年和2023年的营业收入相比怎么样？", "expected_sources": f"{PDF}#第87段 {PDF}#第88段 {PDF}#第92段", "expected_answer": "120亿 vs 100亿，增加20亿元", "variant": ""})
-Q.append({"qid": "C02", "qtype": "对比", "question": "2024年和2023年的毛利率相比怎么样？", "expected_sources": f"{PDF}#第90段 {PDF}#第92段", "expected_answer": "38% vs 35%，上升3个百分点", "variant": ""})
-Q.append({"qid": "C03", "qtype": "对比", "question": "年报和报表截图里的2024年营业收入一致吗？", "expected_sources": f"{PDF}#第87段 {IMG}#第2页", "expected_answer": "一致，均为120亿", "variant": ""})
-Q.append({"qid": "C04", "qtype": "对比", "question": "研发人员占比和员工总数分别是多少？", "expected_sources": f"{PDF}#第94段", "expected_answer": "8600人，28%", "variant": ""})
-Q.append({"qid": "C05", "qtype": "对比", "question": "营业收入和毛利率哪个指标的变化幅度更大？", "expected_sources": f"{PDF}#第87段 {PDF}#第88段 {PDF}#第90段 {PDF}#第92段 {IMG}#第2页 tool://growth_rate#", "expected_answer": "营收增长20%，毛利率上升3个百分点", "variant": ""})
+add("C01", "对比", "米饭和杂粮饭哪个升糖更慢？",
+    src(("FOOD", "米饭与杂粮饭"), ("GI", "低 GI 食物的选择")), "杂粮饭GI约54，低于米饭约83")
+add("C02", "对比", "米饭和馒头哪个碳水更高？",
+    src(("FOOD", "米饭与杂粮饭"), ("FOOD", "面食与馒头")), "馒头47.0克/100克，高于米饭25.9克/100克")
+add("C03", "对比", "白粥和米饭哪个更容易升血糖？",
+    src(("FOOD", "粥与薯类"), ("FOOD", "米饭与杂粮饭")), "白粥GI约78且消化快，餐后血糖反应可能并不低")
+add("C04", "对比", "GI和GL有什么区别？",
+    src(("GI", "升糖指数 GI 的含义"), ("GI", "血糖负荷 GL 的含义")), "GI只反映升糖速度，GL还计入实际碳水数量")
+add("C05", "对比", "精制米面和全谷物主食怎么选？",
+    src(("EIGHT", "主食定量与低升糖主食"), ("GI", "低 GI 食物的选择")), "优先全谷物与杂豆，占主食1/3以上")
+add("C06", "对比", "糖化血红蛋白和指尖血糖各说明什么？",
+    src(("TARGET", "多数成年患者的控制目标"), ("TARGET", "自我血糖监测")), "HbA1c反映近2～3个月均值，不反映即刻血糖与波动")
 
-# ---- 计算类 ----
-Q.append({"qid": "M01", "qtype": "计算", "question": "2024年营业收入相比2023年增长了多少？", "expected_sources": f"{PDF}#第87段 {PDF}#第88段 {PDF}#第92段 {IMG}#第2页 tool://growth_rate#", "expected_answer": "20.0%", "variant": ""})
-Q.append({"qid": "M02", "qtype": "计算", "question": "2024年毛利率比2023年高多少个百分点？", "expected_sources": f"{PDF}#第90段 {PDF}#第92段", "expected_answer": "3个百分点", "variant": ""})
-Q.append({"qid": "M03", "qtype": "计算", "question": "营业收入两年相差多少亿元？", "expected_sources": f"{PDF}#第87段 {PDF}#第88段 {PDF}#第92段 {IMG}#第2页", "expected_answer": "20亿元", "variant": ""})
+# ---- 计算类：个人读数统计（工具证据）----
+READINGS = [5.6, 7.8, 10.2, 6.4, 8.1]
+LOW_READINGS = [3.5, 5.2, 12.8, 9.4]
+PROFILE = {"height_cm": 170, "activity": "轻度活动"}
+GS = "tool://glucose_summary#"
+CT = "tool://carb_target#"
+add("M01", "计算", "我最近血糖平均是多少？", GS, "5条读数平均7.62 mmol/L", context={"glucose_values": READINGS})
+add("M02", "计算", "我最近血糖波动大不大？", GS, "标准差1.77，CV 23.2%", context={"glucose_values": READINGS})
+add("M03", "计算", "我最近血糖最高最低差多少？", GS, "LAGE 4.6 mmol/L（10.2−5.6）", context={"glucose_values": READINGS})
+add("M04", "计算", "我最近血糖有多少在目标范围内？",
+    f"{GS} | {src(('TARGET', '多数成年患者的控制目标'))}", "4/5条在3.9～10.0，按读数占80%",
+    context={"glucose_values": READINGS})
+add("M05", "计算", "我最近血糖有低于3.9的吗？",
+    f"{GS} | {src(('HYPO', '低血糖的常见表现'))}", "1条3.5低于3.9，按读数占25%",
+    context={"glucose_values": LOW_READINGS})
+add("M06", "计算", "我每天该吃多少碳水？", CT, "219～341克/天", context={"profile": PROFILE})
+add("M07", "计算", "三餐碳水怎么分？", CT, "早44～68克，午88～136克，晚88～136克", context={"profile": PROFILE})
+add("M08", "计算", "我一天该吃多少主食？", CT, "每日能量1950～2275 kcal，对应碳水219～341克",
+    variant="改写", context={"profile": PROFILE})
 
 # ---- 库外负例（期望拒答） ----
 for i, q in enumerate([
@@ -96,16 +143,14 @@ for i, q in enumerate([
     "明朝的开国皇帝是谁？",
     "推荐几部好看的科幻电影。",
 ], start=1):
-    Q.append({"qid": f"X{i:02d}", "qtype": "库外", "question": q, "expected_sources": "", "expected_answer": "拒答", "variant": ""})
-
-Q = Q[:50]
+    add(f"X{i:02d}", "库外", q, "", "拒答")
 
 
 def main() -> None:
     out = ROOT / "eval" / "golden_50.csv"
     out.parent.mkdir(exist_ok=True)
     with open(out, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["qid", "qtype", "question", "expected_sources", "expected_answer", "variant", "human_review"])
+        w = csv.DictWriter(f, fieldnames=["qid", "qtype", "question", "expected_sources", "expected_answer", "variant", "context", "human_review"])
         w.writeheader()
         for row in Q:
             w.writerow({**row, "human_review": ""})

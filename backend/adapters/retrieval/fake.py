@@ -10,7 +10,9 @@ def _tokenize(text: str) -> set[str]:
     toks: set[str] = set()
     for w in _TOKEN_RE.findall(text.lower()):
         if w.isascii():
-            toks.add(w)
+            # 纯数字不参与匹配：血糖读数 12.8 会撞上食物成分表里的任意数值，把无关段落顶到第一
+            if not w.isdigit():
+                toks.add(w)
         else:
             toks.update(w[i : i + 2] for i in range(len(w) - 1))
     return toks

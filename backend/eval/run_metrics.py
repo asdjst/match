@@ -37,19 +37,26 @@ def load_golden() -> list[dict]:
 
 
 def parse_expected(src: str) -> list[tuple[str, str]]:
-    return [tuple(tok.partition("#")[::2]) for tok in src.split() if "#" in tok]
+    # 用 " | " 分隔多个来源：知识卡小标题自带空格（如"升糖指数 GI 的含义"），按空格切会把定位截断
+    out = []
+    for tok in src.split("|"):
+        file, sep, loc = tok.strip().partition("#")
+        if sep:
+            out.append((file.strip(), loc.strip()))
+    return out
 
 
 def source_hit(src, file: str, loc: str) -> bool:
     if src.file_path != file:
         return False
-    if loc.endswith("段"):
-        return src.section == loc
-    if loc.endswith("页"):
+    if not loc:  # 空定位（如 tool://glucose_summary#）只要求来源匹配
+        return True
+    if loc.endswith("页") and loc[1:-1].isdigit():
         return src.page == int(loc[1:-1])
     if ":" in loc:
         return src.time_code == loc
-    return not loc  # 空定位（如 tool://growth_rate#）只要求来源匹配
+    # 知识卡的定位就是小标题原文，PDF 段落则是"第N段"，两者都按 section相等判断
+    return src.section == loc
 
 
 def hits_expected(ev: Evidence, expected: list[tuple[str, str]]) -> bool:
@@ -62,7 +69,10 @@ def retrieval_metrics(rows: list[dict], retriever: R2RClient) -> dict:
     for row in rows:
         if row["qtype"] == "库外":
             continue
-        expected = parse_expected(row["expected_sources"])
+        # 工具证据由 executor 现场算出，检索器不可能召回，不能算进检索指标
+        expected = [(f, loc) for f, loc in parse_expected(row["expected_sources"]) if not f.startswith("tool://")]
+        if not expected:
+            continue
         evs = retriever.recall(row["question"])
         rank = next((i + 1 for i, ev in enumerate(evs) if hits_expected(ev, expected)), None)
         n += 1
@@ -120,6 +130,8 @@ def run_pipeline(rows: list[dict], app) -> list[dict]:
             "round_no": 0,
             "evidence": {},
             "node_results": {},
+            # 计算题的个人读数/档案：工具入参只能来自这里，不能让模型编数
+            **(json.loads(row["context"]) if row.get("context") else {}),
         }
         final: dict = dict(init)
         for chunk in graph.stream(init, {"configurable": {"thread_id": init["trace_id"]}, "recursion_limit": 30}, stream_mode="updates"):
@@ -138,34 +150,49 @@ def run_pipeline(rows: list[dict], app) -> list[dict]:
     return out
 
 
+def answer_text(r: dict) -> str:
+    """评用户真正读到的文本：成文回答优先，未成文时退回断言拼接。"""
+    return r["deliverable"].get("answer") or "；".join(a.text for a in r["assertions"])
+
+
 def pipeline_metrics(results: list[dict], judge: Judge) -> dict:
     cite_ok = cite_all = refused_ok = refused_n = 0
+    gold_hit = gold_n = cite_resolved = cite_total = composed = 0
     scores = []
     for r in results:
         row, d = r["expected"], r["deliverable"]
         pool = r["evidence_pool"]
-        stats = citation.assertion_stats(r["assertions"], pool)
         expected = parse_expected(row["expected_sources"])
         if row["qtype"] == "库外":
             refused_n += 1
             refused_ok += 1 if d.get("refused") else 0
             continue
-        for a in r["assertions"]:
-            for c in a.cites:
-                if c in pool:
-                    cite_all += 1
-                    cite_ok += 1 if hits_expected(pool[c], expected) else 0
-        ans = "；".join(a.text for a in r["assertions"]) or ""
+        cited = [c for a in r["assertions"] for c in a.cites]
+        cite_total += len(cited)
+        cite_resolved += sum(1 for c in cited if c in pool)
+        gold_n += 1
+        gold_hit += int(any(hits_expected(pool[c], expected) for c in cited if c in pool))
+        for c in cited:
+            if c in pool:
+                cite_all += 1
+                cite_ok += 1 if hits_expected(pool[c], expected) else 0
+        ans = answer_text(r)
+        composed += 1 if d.get("answer") else 0
         scores.append(judge.score(row["question"], row["expected_answer"], ans))
+    stats = [citation.assertion_stats(r["assertions"], r["evidence_pool"]) for r in results]
+    total = sum(s["total"] for s in stats)
     return {
         "n": len(results),
+        # 关键来源命中率：答案是否引到了金标标注的那一段（衡量"引对没有"）
+        "gold_source_coverage": round(gold_hit / gold_n, 4) if gold_n else 0.0,
+        # 引用可解析率：引用编号是否都能在证据池里找到原文（衡量"能不能点开核验"）
+        "citation_resolvable": round(cite_resolved / cite_total, 4) if cite_total else 0.0,
+        # 严格精确率：金标只标最小关键来源集，答案附带的合理延伸引用会被算作不命中，天然偏低
         "citation_accuracy": round(cite_ok / cite_all, 4) if cite_all else 0.0,
-        "no_source_rate": round(
-            sum(citation.assertion_stats(r["assertions"], r["evidence_pool"])["total"] - citation.assertion_stats(r["assertions"], r["evidence_pool"])["cited"] for r in results)
-            / max(sum(citation.assertion_stats(r["assertions"], r["evidence_pool"])["total"] for r in results), 1),
-            4,
-        ),
+        "no_source_rate": round((total - sum(s["cited"] for s in stats)) / max(total, 1), 4),
         "answer_score": round(sum(scores) / len(scores), 4) if scores else 0.0,
+        # 成文率：多少题真的交出了连贯回答，而不是校验不过退回逐条断言
+        "composed_rate": round(composed / gold_n, 4) if gold_n else 0.0,
         "offtopic_refusal": f"{refused_ok}/{refused_n}" if refused_n else "n/a",
     }
 
@@ -183,7 +210,7 @@ def ablation(results: list[dict], llm, judge: Judge) -> dict:
         ans = llm.complete(prompt, tier="strong").text
         direct_lat += time.time() - t0
         direct_scores.append(judge.score(row["question"], row["expected_answer"], ans))
-        ans_rag = "；".join(a.text for a in r["assertions"]) or ""
+        ans_rag = answer_text(r)
         rag_scores.append(judge.score(row["question"], row["expected_answer"], ans_rag))
     n = len(direct_scores) or 1
     return {

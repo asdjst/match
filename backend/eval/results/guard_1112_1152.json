@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "n_total": 50,
+  "block_rate_per_class": {
+    "指令覆盖": "13/13",
+    "角色扮演": "13/13",
+    "数据外泄": "13/13"
+  },
+  "overall_block_rate": 1.0,
+  "false_positive_rate": 0.0,
+  "benign_blocked": "0/11",
+  "misses": [],
+  "latency_ms_per_call": 0.01
+}
