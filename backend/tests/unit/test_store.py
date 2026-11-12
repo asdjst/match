@@ -6,15 +6,15 @@ from pathlib import Path
 from core.services.store import RunStore
 
 DAG = {
-    "question": "公司2024年营业收入是多少？",
-    "nodes": [{"node_id": "r1", "role": "retriever", "instruction": "检索", "query": "营收"}],
+    "question": "一碗米饭大概多少碳水？",
+    "nodes": [{"node_id": "r1", "role": "retriever", "instruction": "检索", "query": "米饭 碳水"}],
 }
 EVIDENCE = {
-    "E1": {"doc_id": "d1", "quote": "营业收入 120 亿元", "score": 3.0, "channel": "local"},
+    "E1": {"doc_id": "d1", "quote": "米饭每100g含碳水25.9g", "score": 0.6, "channel": "local"},
 }
 DELIVERABLE = {
-    "question": "公司2024年营业收入是多少？",
-    "assertions": [{"text": "营业收入 120 亿元", "cites": ["E1"]}],
+    "question": "一碗米饭大概多少碳水？",
+    "assertions": [{"text": "米饭每100g含碳水25.9g", "cites": ["E1"]}],
     "citations": [],
     "confidence": 0.9,
     "confidence_source": "formula",
@@ -23,7 +23,7 @@ DELIVERABLE = {
 }
 
 
-def _state(question: str = "公司2024年营业收入是多少？", deliverable=None, pending_human: bool = False) -> dict:
+def _state(question: str = "一碗米饭大概多少碳水？", deliverable=None, pending_human: bool = False) -> dict:
     return {
         "question": question,
         "round_no": 1,
@@ -65,8 +65,10 @@ def test_save_then_get_round_trips_payload(tmp_path):
         "image_id": None,
         "food_items": [],
         "profile": None,
+        "node_events": [],
         "timings": [],
         "duration_ms": None,
+        "error": None,
     }
     assert got["node_results"]["r1"]["retrievals"][0]["channel"] == "local"
     assert store.get_run("missing") is None
@@ -152,7 +154,7 @@ def test_history_returns_recent_turns_in_order(tmp_path):
 
     # 只取本会话最近两轮，且按时间正序回填给 planner
     assert [h["question"] for h in history] == ["第二问", "第三问"]
-    assert history[0]["answer"] == "营业收入 120 亿元"
+    assert history[0]["answer"] == "米饭每100g含碳水25.9g"
     assert history[0]["confidence"] == 0.9
     store.close()
 
@@ -167,4 +169,41 @@ def test_recent_food_names_falls_back_to_latest_photo(tmp_path):
 
     assert store.recent_food_names("s1") == ["甜玉米", "樱桃"]
     assert store.recent_food_names("s2") == []
+    store.close()
+
+
+def test_runs_are_scoped_to_owner(tmp_path):
+    store = _store(tmp_path)
+    store.save_run("alice-run", _state(deliverable=DELIVERABLE), session_id="s1", user_id="alice")
+    store.save_run("bob-run", _state(question="bob 的问题"), session_id="s1", user_id="bob")
+
+    assert store.get_run("alice-run", user_id="bob") is None
+    assert store.get_run("alice-run", with_session=True, user_id="bob") is None
+    assert [r["run_id"] for r in store.list_runs(user_id="bob")] == ["bob-run"]
+    assert [h["question"] for h in store.history("s1", user_id="bob")] == ["bob 的问题"]
+    assert [h["question"] for h in store.history("s1", user_id="alice")] == ["一碗米饭大概多少碳水？"]
+    # 归属在首次写入时定下，后续 upsert 不改所有者
+    store.save_run("alice-run", _state(deliverable=DELIVERABLE), session_id="s1", user_id="bob")
+    assert store.get_run("alice-run", user_id="alice") is not None
+    store.close()
+
+
+def test_legacy_db_without_user_id_column_migrates_to_local(tmp_path):
+    db_path = tmp_path / "runs.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL DEFAULT '',
+                question TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'running',
+                confidence REAL, refused INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload TEXT NOT NULL)"""
+        )
+        conn.execute(
+            "INSERT INTO runs VALUES ('old', 's1', '旧问题', 'done', 0.9, 0, '2020-01-01T00:00:00+00:00',"
+            " '2020-01-01T00:00:00+00:00', '{\"question\": \"旧问题\"}')"
+        )
+
+    store = RunStore(db_path)
+    assert store.get_run("old", with_session=True)["session_id"] == "s1"
+    assert [r["run_id"] for r in store.list_runs()] == ["old"]
     store.close()

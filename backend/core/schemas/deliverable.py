@@ -14,6 +14,9 @@ class Deliverable(BaseModel):
 
     question: str
     assertions: list[Assertion] = Field(default_factory=list)
+    answer: str | None = Field(default=None, description="成文智能体写出的连贯回答；为空时按断言逐条呈现")
+    answer_source: Literal["llm", "assertions"] = "assertions"
+    answer_note: str | None = Field(default=None, description="未成文的原因，供轨迹核对")
     citations: list = Field(default_factory=list, description="list[Evidence]")
     trace_id: str = ""
     confidence: float = 0.0

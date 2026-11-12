@@ -36,7 +36,7 @@ def test_degraded_with_cached_evidence_when_analyst_down(client, monkeypatch):
         return real(self, prompt, tier, schema)
 
     monkeypatch.setattr(FakeLLM, "complete", analyst_down)
-    events = _chat(client, "公司2024年营业收入是多少？")
+    events = _chat(client, "一碗米饭大概多少碳水？")
     d = _deliverable(events)
     snapshot = client.get(f"/api/tasks/{events[0]['run_id']}").json()
     assert "ConnectionError" in snapshot["error"]
@@ -59,7 +59,7 @@ def test_refused_style_degrade_when_retriever_down(client, monkeypatch):
         raise ConnectionError("R2R 不可达")
 
     monkeypatch.setattr(FakeRetriever, "recall", recall_down)
-    events = _chat(client, "公司2024年营业收入是多少？")
+    events = _chat(client, "一碗米饭大概多少碳水？")
     d = _deliverable(events)
     snapshot = client.get(f"/api/tasks/{events[0]['run_id']}").json()
     assert [e["node"] for e in snapshot["node_events"]] == ["planner"]
@@ -84,7 +84,8 @@ def test_executor_tool_timeout_marks_blocked():
     out = graph.invoke(
         {
             "session_id": "s1",
-            "question": "2024年营业收入120亿元，2023年是100亿元，同比增长多少？",
+            "question": "我最近血糖波动大吗？平均值是多少？",
+            "glucose_values": [5.6, 10.2, 7.8],
             "trace_id": "t1",
             "round_no": 0,
             "evidence": {},

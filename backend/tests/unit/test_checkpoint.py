@@ -23,7 +23,7 @@ class SendBackLLM(FakeLLM):
 
 INIT = {
     "session_id": "s1",
-    "question": "公司2024年营业收入是多少？",
+    "question": "一碗米饭大概多少碳水？",
     "trace_id": "t-ckpt",
     "round_no": 0,
     "evidence": {},

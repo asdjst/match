@@ -15,7 +15,11 @@ BREADTH_CAP = 3
 _SEG_RE = re.compile(r"[a-z]+|\d+(?:\.\d+)?|[\u4e00-\u9fff]+")
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 # 「硬数字」：带单位/百分号或带小数；裸整数（年份、条数）只当语境，不做一致性校验
-_CLAIM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|％|亿|万|元)")
+# 单位按控糖场景取：碳水/体重/身高/能量/血糖/份量/时间
+_CLAIM_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:%|％|mmol|mg|kcal|千卡|毫升|ml|克|g|kg|cm|两|斤|小时|分钟|岁)",
+    re.IGNORECASE,
+)
 _DECIMAL_RE = re.compile(r"(?<![\d.])(\d+\.\d+)(?![\d])")
 
 
@@ -48,7 +52,7 @@ def _numbers(text: str) -> set[float]:
     return {float(m) for m in _NUM_RE.findall(text.replace(",", ""))}
 
 
-def _claim_numbers(text: str) -> set[float]:
+def claim_numbers(text: str) -> set[float]:
     text = text.replace(",", "")
     return {float(m) for m in _CLAIM_RE.findall(text)} | {float(m) for m in _DECIMAL_RE.findall(text)}
 
@@ -61,23 +65,38 @@ def support(assertion: str, evidence: Evidence) -> float:
     return len(units & _units(evidence.quote)) / len(units)
 
 
+def numbers_match(wanted: set[float], available: set[float]) -> bool:
+    """断言里的硬数字都要能在证据里找到；整数允许是证据值的四舍五入。
+
+    证据写「38.9 克」、断言写「约 39 克」是同一件事，不该判成无支撑；
+    小数仍按原值严格比对，99.9 不会因为接近 100 就蒙混过关。
+    """
+    for value in wanted:
+        if value in available:
+            continue
+        if value.is_integer() and any(round(a) == value for a in available):
+            continue
+        return False
+    return True
+
+
 def _assertion_support(a: Assertion, pool: dict[str, Evidence]) -> float:
     """断言级支撑：取所引证据里最像的一条，再用整组证据核对硬数字。
 
-    数字必须都能在所引证据里找到——财务类断言里数值才是硬事实；
+    数字必须都能在所引证据里找到——碳水、血糖这类数值才是硬事实；
     都能对上时按强支撑计（0.6 起），因为长引用里的措辞差异不该淹没数值互证。
     """
     cited = [pool[c] for c in a.cites if c in pool]
     if not cited:
         return 0.0
     text = max(support(a.text, ev) for ev in cited)
-    wanted = _claim_numbers(a.text)
+    wanted = claim_numbers(a.text)
     if not wanted:
         return text
     available: set[float] = set()
     for ev in cited:
         available |= _numbers(ev.quote)
-    if not wanted <= available:
+    if not numbers_match(wanted, available):
         return min(text, 0.1)
     return max(text, 0.6)
 

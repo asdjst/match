@@ -6,17 +6,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 
+from app.api.deps import current_user
 from core.graph.events import NodeEventLog
 from core.graph.state import GraphState
 from core.schemas.deliverable import Deliverable
 from core.schemas.profile import ProfileIn
 from core.services.food import build_food_evidence
-from core.services.meals import memory_evidences
+from core.services.meals import memory_evidences, recent_glucose_values
 from core.services.memory import answer_snippet
 
 router = APIRouter()
@@ -28,7 +29,6 @@ _BACKREF = re.compile(r"这个|这餐|这顿|这份|刚才|刚刚|上一|上个"
 
 class ChatRequest(BaseModel):
     session_id: str = "default"
-    user_id: str = Field(default="local", max_length=64)
     question: str = Field(min_length=1)
     image_id: str | None = Field(default=None, max_length=64)
     food_items: list[dict] = Field(default_factory=list, max_length=20)
@@ -45,8 +45,10 @@ def _sse(payload: dict) -> str:
 
 
 @router.post("/api/chat")
-async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
+async def chat(req: ChatRequest, request: Request, user: str = Depends(current_user)) -> StreamingResponse:
     state = request.app.state
+    # 进程内会话记忆按用户隔离：不同用户用同一个 session_id 也不能互相看到上下文
+    memory_key = f"{user}:{req.session_id}"
 
     async def gen() -> AsyncIterator[str]:
         run_id = str(uuid.uuid4())
@@ -58,7 +60,7 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
 
         def persist(record: dict) -> None:
             try:
-                state.store.save_run(run_id, record, req.session_id, req.question)
+                state.store.save_run(run_id, record, req.session_id, req.question, user_id=user)
             except Exception as exc:  # 落库失败不影响在线交付
                 state.tracer.event(trace_id, "store_error", {"error": str(exc)[:200]})
 
@@ -72,6 +74,7 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
             )
             state.runs[run_id] = events.snapshot({
                 "session_id": req.session_id,
+                "user_id": user,
                 "question": req.question,
                 "round_no": 0,
                 "node_results": {},
@@ -91,23 +94,25 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
         food_items, food_pool = build_food_evidence(req.image_id, req.food_items)
         pool = dict(food_pool)
         # 个人餐食记录作为独立证据通道：命中食物名或“上次”类提问时附带，失败不阻塞问答
+        glucose_values: list[float] = []
         try:
             target_foods = [str(item.get("name") or "") for item in food_items]
             if not target_foods and _BACKREF.search(question):
-                target_foods = state.store.recent_food_names(req.session_id)
+                target_foods = state.store.recent_food_names(req.session_id, user_id=user)
             for ev in memory_evidences(
-                state.meals, req.user_id, question, target_foods=target_foods
+                state.meals, user, question, target_foods=target_foods
             ):
                 eid = _next_evidence_id(pool)
                 pool[eid] = ev.model_copy(update={"evidence_id": eid}).model_dump()
+            glucose_values = recent_glucose_values(state.meals, user)
         except Exception as exc:
             state.tracer.event(trace_id, "memory_error", {"error": str(exc)[:200]})
         profile = req.profile.normalized() if req.profile else None
         # 多轮上下文：优先进程内记忆，重启后由 SQLite 里的历史 run 回填
-        history = state.memory.history(req.session_id, last=3)
+        history = state.memory.history(memory_key, last=3)
         if not history:
             try:
-                history = state.store.history(req.session_id, last=3)
+                history = state.store.history(req.session_id, last=3, user_id=user)
             except Exception as exc:  # 历史读失败只影响指代消解，不阻塞问答
                 state.tracer.event(trace_id, "memory_error", {"error": str(exc)[:200]})
         init: GraphState = {
@@ -123,17 +128,18 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
             "image_id": req.image_id,
             "food_items": food_items,
             "profile": profile,
+            "glucose_values": glucose_values,
         }
 
         def remember(record: dict) -> None:
             deliverable = record.get("deliverable") or {}
-            state.memory.append(req.session_id, {
+            state.memory.append(memory_key, {
                 "question": record.get("question") or req.question,
                 "answer": answer_snippet(deliverable),
                 "confidence": deliverable.get("confidence"),
                 "run_id": run_id,
             })
-        merged: dict = {**init, "created_at": created_at}
+        merged: dict = {**init, "created_at": created_at, "user_id": user}
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 30}
         interrupted = False
         try:

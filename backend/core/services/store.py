@@ -9,6 +9,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id      TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL DEFAULT '',
+    user_id     TEXT NOT NULL DEFAULT 'local',
     question    TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL DEFAULT 'running',
     confidence  REAL,
@@ -53,6 +54,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """早期库的 runs 没有 user_id 列：补列并归到 local，历史演示数据仍可在单机模式下回看。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
+    if "user_id" not in cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local'")
+        conn.commit()
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_user_session ON runs(user_id, session_id, created_at DESC)")
+    conn.commit()
+
+
 class RunStore:
     """SQLite 持久化：run 全量快照（含 node_results 里的检索记录）+ 历史列表。
     进程重启后 GET /api/tasks 仍可回查；WAL 模式，单文件零运维。"""
@@ -65,8 +76,9 @@ class RunStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        _migrate(self._conn)
 
-    def save_run(self, run_id: str, state: dict, session_id: str = "", question: str = "") -> None:
+    def save_run(self, run_id: str, state: dict, session_id: str = "", question: str = "", user_id: str = "local") -> None:
         deliverable = state.get("deliverable") or {}
         status = (
             "interrupted" if state.get("pending_human")
@@ -97,8 +109,8 @@ class RunStore:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO runs (run_id, session_id, question, status, confidence, refused, created_at, updated_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO runs (run_id, session_id, user_id, question, status, confidence, refused, created_at, updated_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     status=excluded.status, confidence=excluded.confidence,
                     refused=excluded.refused, updated_at=excluded.updated_at, payload=excluded.payload
@@ -106,6 +118,7 @@ class RunStore:
                 (
                     run_id,
                     session_id,
+                    user_id,
                     payload["question"] or "",
                     status,
                     deliverable.get("confidence"),
@@ -117,10 +130,11 @@ class RunStore:
             )
             self._conn.commit()
 
-    def get_run(self, run_id: str, with_session: bool = False) -> dict | None:
+    def get_run(self, run_id: str, with_session: bool = False, user_id: str = "local") -> dict | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT session_id, created_at, payload FROM runs WHERE run_id=?", (run_id,)
+                "SELECT session_id, created_at, payload FROM runs WHERE run_id=? AND user_id=?",
+                (run_id, user_id),
             ).fetchone()
         if row is None:
             return None
@@ -131,24 +145,24 @@ class RunStore:
             payload.setdefault("created_at", row["created_at"])
         return payload
 
-    def list_runs(self, limit: int = 50) -> list[dict]:
+    def list_runs(self, limit: int = 50, user_id: str = "local") -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
                 """SELECT run_id, session_id, question, status, confidence, refused, created_at
-                   FROM runs ORDER BY created_at DESC LIMIT ?""",
-                (limit,),
+                   FROM runs WHERE user_id=? ORDER BY created_at DESC LIMIT ?""",
+                (user_id, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def history(self, session_id: str, last: int = 3) -> list[dict]:
+    def history(self, session_id: str, last: int = 3, user_id: str = "local") -> list[dict]:
         """会话内最近 last 轮问答（时间正序）：进程重启后给规划器回填多轮上下文。"""
         from core.services.memory import answer_snippet
 
         with self._lock:
             rows = self._conn.execute(
                 """SELECT question, payload FROM runs
-                   WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?""",
-                (session_id, last),
+                   WHERE session_id=? AND user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                (session_id, user_id, last),
             ).fetchall()
         items: list[dict] = []
         for row in reversed(rows):
@@ -161,13 +175,13 @@ class RunStore:
             })
         return items
 
-    def recent_food_names(self, session_id: str, last: int = 5) -> list[str]:
+    def recent_food_names(self, session_id: str, last: int = 5, user_id: str = "local") -> list[str]:
         """本会话最近一次拍照识别出的食物名：给“我之前吃过这个吗”这类追问补齐指代。"""
         with self._lock:
             rows = self._conn.execute(
                 """SELECT payload FROM runs
-                   WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?""",
-                (session_id, last),
+                   WHERE session_id=? AND user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                (session_id, user_id, last),
             ).fetchall()
         for row in rows:
             payload = json.loads(row["payload"])
@@ -202,6 +216,7 @@ def _foods_json(foods: list[dict]) -> str:
             "grams": float(f.get("grams") or 0),
             "carbs_g": None if f.get("carbs_g") is None else float(f.get("carbs_g")),
             "gl": None if f.get("gl") is None else float(f.get("gl")),
+            "estimated": bool(f.get("estimated")),
         }
         for f in foods
         if str(f.get("name", "")).strip()
@@ -257,12 +272,12 @@ class MealStore:
                 ),
             )
             self._conn.commit()
-        return self.get_meal(meal_id) or {}
+        return self.get_meal(meal_id, user_id) or {}
 
-    def get_meal(self, meal_id: str) -> dict | None:
+    def get_meal(self, meal_id: str, user_id: str = "local") -> dict | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM meal_logs WHERE meal_id=?", (meal_id,)
+                "SELECT * FROM meal_logs WHERE meal_id=? AND user_id=?", (meal_id, user_id)
             ).fetchone()
             if row is None:
                 return None
@@ -292,7 +307,7 @@ class MealStore:
             by_meal.setdefault(r["meal_id"], []).append(r)
         return [self._to_meal(row, by_meal.get(row["meal_id"], [])) for row in rows]
 
-    def update_meal(self, meal_id: str, patch: dict) -> dict | None:
+    def update_meal(self, meal_id: str, patch: dict, user_id: str = "local") -> dict | None:
         fields: list[str] = []
         values: list[object] = []
         for key in ("eaten_at", "meal_type", "note", "source", "insulin_note"):
@@ -304,17 +319,22 @@ class MealStore:
             fields += ["foods=?", "carbs_g=?", "gl=?"]
             values += [_foods_json(foods), _sum_carbs(foods), _sum_gl(foods)]
         if not fields:
-            return self.get_meal(meal_id)
+            return self.get_meal(meal_id, user_id)
         fields.append("updated_at=?")
-        values += [_now(), meal_id]
-        action = "UPDATE meal_logs SET " + ", ".join(fields) + " WHERE meal_id=?"
+        values += [_now(), meal_id, user_id]
+        action = "UPDATE meal_logs SET " + ", ".join(fields) + " WHERE meal_id=? AND user_id=?"
         with self._lock:
             cur = self._conn.execute(action, tuple(values))
             self._conn.commit()
-        return self.get_meal(meal_id) if cur.rowcount else None
+        return self.get_meal(meal_id, user_id) if cur.rowcount else None
 
-    def delete_meal(self, meal_id: str) -> bool:
+    def delete_meal(self, meal_id: str, user_id: str = "local") -> bool:
         with self._lock:
+            owned = self._conn.execute(
+                "SELECT 1 FROM meal_logs WHERE meal_id=? AND user_id=?", (meal_id, user_id)
+            ).fetchone()
+            if owned is None:
+                return False
             self._conn.execute("DELETE FROM glucose_readings WHERE meal_id=?", (meal_id,))
             cur = self._conn.execute("DELETE FROM meal_logs WHERE meal_id=?", (meal_id,))
             self._conn.commit()
@@ -327,8 +347,9 @@ class MealStore:
         minutes_after: int = 120,
         measured_at: str | None = None,
         source: str = "manual",
+        user_id: str = "local",
     ) -> dict | None:
-        if self.get_meal(meal_id) is None:
+        if self.get_meal(meal_id, user_id) is None:
             return None
         reading_id = uuid.uuid4().hex[:12]
         measured_at = measured_at or _now()
@@ -345,7 +366,9 @@ class MealStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def delete_glucose(self, meal_id: str, reading_id: str) -> bool:
+    def delete_glucose(self, meal_id: str, reading_id: str, user_id: str = "local") -> bool:
+        if self.get_meal(meal_id, user_id) is None:
+            return False
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM glucose_readings WHERE meal_id=? AND reading_id=?",

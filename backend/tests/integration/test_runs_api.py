@@ -7,12 +7,12 @@ from app.main import create_app
 from infra.config import Settings
 
 STATE = {
-    "question": "公司2024年营业收入是多少？",
+    "question": "一碗米饭大概多少碳水？",
     "round_no": 1,
     "node_results": {"r1": {"status": "done"}},
     "verdict": {"verdict": "pass"},
     "deliverable": {
-        "question": "公司2024年营业收入是多少？",
+        "question": "一碗米饭大概多少碳水？",
         "assertions": [],
         "citations": [],
         "confidence": 0.9,
@@ -21,7 +21,7 @@ STATE = {
         "refused": False,
     },
     "pending_human": False,
-    "dag": {"question": "公司2024年营业收入是多少？", "nodes": []},
+    "dag": {"question": "一碗米饭大概多少碳水？", "nodes": []},
     "evidence": {},
 }
 

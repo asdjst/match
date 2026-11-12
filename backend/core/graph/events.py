@@ -40,6 +40,23 @@ def _numeric_results(tool: str, output: dict) -> list[str]:
             for key, label, unit in [("carbs_per_100g", "每100g碳水", "g"), ("gi", "GI", "")]
             if number(result.get(key))
         ]
+    if tool == "glucose_summary" and isinstance(result, dict):
+        pct = result.get("pct") or {}
+        return [
+            f"{label} {value}{unit}"
+            for value, label, unit in [
+                (result.get("mean"), "平均血糖", " mmol/L"),
+                (result.get("cv"), "CV", "%"),
+                (pct.get("ok"), "达标读数占比", "%"),
+            ]
+            if number(value)
+        ]
+    if tool == "meal_gl_total" and isinstance(result, dict) and number(result.get("total_gl")):
+        return [f"整餐 GL 合计 {result['total_gl']}"]
+    if tool == "carb_target" and isinstance(result, dict):
+        span = result.get("carbs_g_per_day") or []
+        if len(span) == 2 and all(number(v) for v in span):
+            return [f"每日碳水估算 {span[0]}–{span[1]}g"]
     return []
 
 
@@ -123,9 +140,15 @@ def node_summary(node: str, delta: dict, state: dict, before: dict) -> str:
             return "本步已返回，未生成交付物。"
         if deliverable.get("refused"):
             return "已生成拒答式降级交付物。" if deliverable.get("degraded") else "已生成拒答结果，未给出正常结论。"
+        if deliverable.get("answer"):
+            detail = f"已把 {len(deliverable.get('assertions') or [])} 条断言成文为连贯回答，引用编号未变。"
+        elif deliverable.get("answer_note"):
+            detail = f"未成文：{deliverable['answer_note']}。"
+        else:
+            detail = ""
         if deliverable.get("degraded"):
-            return "已生成降级交付物，不作为完整流程的正常交付。"
-        return "已生成交付物。"
+            return "已生成降级交付物，不作为完整流程的正常交付。" + detail
+        return detail or "已生成交付物。"
     return "本步执行已返回。"
 
 

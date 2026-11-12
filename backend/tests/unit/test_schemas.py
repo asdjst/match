@@ -13,16 +13,21 @@ def test_nodespec_rejects_illegal_role():
 
 
 def test_source_ref_label_combinations():
-    # 四字段齐全时按 file_path/section/page/time_code 顺序拼接
-    full = SourceRef(file_path="A公司2024年报.pdf", section="87", page=2, time_code="03:12")
-    assert full.label() == "A公司2024年报.pdf 第87段 第2页 03:12"
+    # 四字段齐全时按 file_path/section/page/time_code 顺序拼接；纯数字 section 补成"第N段"
+    full = SourceRef(file_path="指南.pdf", section="87", page=2, time_code="03:12")
+    assert full.label() == "指南.pdf 第87段 第2页 03:12"
+    # md 小标题原样展示，不能再套一层"第…段"
+    heading = SourceRef(file_path="常见食物碳水速查_摘编.md", section="米饭与杂粮饭")
+    assert heading.label() == "常见食物碳水速查_摘编.md 米饭与杂粮饭"
+    # PDF 解析器已给出定位串，不重复包装
+    assert SourceRef(file_path="指南.pdf", section="第87段").label() == "指南.pdf 第87段"
     # 只有文件名
     assert SourceRef(file_path="x.pdf").label() == "x.pdf"
     # 全空 → 兜底文案
     assert SourceRef().label() == "未知来源"
     # 音频：文件名 + 时间码
-    audio = SourceRef(file_path="业绩说明会.m4a", time_code="07:45", modality="audio")
-    assert audio.label() == "业绩说明会.m4a 07:45"
+    audio = SourceRef(file_path="语音记录.m4a", time_code="07:45", modality="audio")
+    assert audio.label() == "语音记录.m4a 07:45"
 
 
 def test_taskdag_by_role():

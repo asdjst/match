@@ -16,16 +16,16 @@ class FakePort:
 
     def recall(self, query, filters=None):
         self.queries.append(query)
-        return [Evidence(doc_id="d1", quote="公司2024年营业收入为120亿元")]
+        return [Evidence(doc_id="d1", quote="米饭每100g含碳水25.9g")]
 
 
 def _dag(*nodes: NodeSpec) -> TaskDAG:
-    return TaskDAG(question="公司营收？", nodes=list(nodes))
+    return TaskDAG(question="米饭碳水多少？", nodes=list(nodes))
 
 
 def _state(dag: TaskDAG, **extra) -> dict:
     base = {
-        "question": "公司营收？",
+        "question": "米饭碳水多少？",
         "round_no": 0,
         "dag": dag.model_dump(),
         "evidence": {},
@@ -37,8 +37,8 @@ def _state(dag: TaskDAG, **extra) -> dict:
 
 def test_step_budget_blocks_following_nodes_and_keeps_first_result():
     dag = _dag(
-        NodeSpec(node_id="r1", role="retriever", query="营收", budget=Budget(max_steps=1)),
-        NodeSpec(node_id="r2", role="retriever", query="毛利率", budget=Budget(max_steps=1)),
+        NodeSpec(node_id="r1", role="retriever", query="米饭碳水", budget=Budget(max_steps=1)),
+        NodeSpec(node_id="r2", role="retriever", query="馒头碳水", budget=Budget(max_steps=1)),
     )
     port = FakePort()
 
@@ -50,11 +50,11 @@ def test_step_budget_blocks_following_nodes_and_keeps_first_result():
     assert out["steps"] == 1
     assert out["budget_stop"]
     # 第二个检索节点没有再发起检索
-    assert port.queries == ["营收"]
+    assert port.queries == ["米饭碳水"]
 
 
 def test_timeout_budget_blocks_retrieval():
-    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="营收", budget=Budget(timeout_s=1)))
+    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="米饭碳水", budget=Budget(timeout_s=1)))
     port = FakePort()
 
     out = make_retriever(port)(
@@ -69,8 +69,8 @@ def test_timeout_budget_blocks_retrieval():
 def test_budget_uses_widest_declared_limit():
     # 真实 planner 会给各节点写不同上限（如首节点 3、检索节点 8），整体按最宽的那份算
     dag = _dag(
-        NodeSpec(node_id="r1", role="retriever", query="营收", budget=Budget(max_steps=1)),
-        NodeSpec(node_id="r2", role="retriever", query="毛利率", budget=Budget(max_steps=8)),
+        NodeSpec(node_id="r1", role="retriever", query="米饭碳水", budget=Budget(max_steps=1)),
+        NodeSpec(node_id="r2", role="retriever", query="馒头碳水", budget=Budget(max_steps=8)),
     )
 
     out = make_retriever(FakePort())(_state(dag))
@@ -81,7 +81,7 @@ def test_budget_uses_widest_declared_limit():
 
 
 def test_critic_does_not_flag_when_planned_work_fits_budget():
-    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="营收", budget=Budget(max_steps=1)))
+    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="米饭碳水", budget=Budget(max_steps=1)))
 
     # 计划内工作刚好用满步数上限不算耗尽：收尾只看耗时
     out = make_critic()(_state(dag, steps=1, started_at=time.monotonic(), assertions=[]))
@@ -91,11 +91,11 @@ def test_critic_does_not_flag_when_planned_work_fits_budget():
 
 
 def test_critic_passes_when_budget_exhausted_even_with_issues():
-    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="营收"))
+    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="米饭碳水"))
     # 断言引用了不存在的证据，规则审校本应打回
     state = _state(
         dag,
-        assertions=[{"text": "营收 999 亿元", "cites": ["E9"]}],
+        assertions=[{"text": "米饭碳水 99.9g", "cites": ["E9"]}],
         budget_stop="步数预算用尽（8/8）",
     )
 
@@ -106,12 +106,12 @@ def test_critic_passes_when_budget_exhausted_even_with_issues():
 
 
 def test_writer_marks_degraded_with_budget_reason():
-    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="营收"))
-    evidence = Evidence(evidence_id="E1", doc_id="d1", quote="公司2024年营业收入为120亿元")
+    dag = _dag(NodeSpec(node_id="r1", role="retriever", query="米饭碳水"))
+    evidence = Evidence(evidence_id="E1", doc_id="d1", quote="米饭每100g含碳水25.9g")
     state = _state(
         dag,
         evidence={"E1": evidence.model_dump()},
-        assertions=[{"text": "公司2024年营业收入为120亿元", "cites": ["E1"]}],
+        assertions=[{"text": "米饭每100g含碳水25.9g", "cites": ["E1"]}],
         verdict={"verdict": "pass", "issues": []},
         budget_stop="耗时预算用尽（130s > 120s）",
     )

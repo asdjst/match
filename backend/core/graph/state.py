@@ -21,3 +21,4 @@ class GraphState(TypedDict, total=False):
     image_id: str | None    # 餐食图片只存服务端文件名，不把 base64 写进状态
     food_items: list[dict]  # FoodItem.model_dump()，由 /api/food/analyze 产出
     profile: dict           # 用户自填代谢档案（含 BMI），只作个性化上下文，不进证据池
+    glucose_values: list[float]  # 最近 14 天个人血糖读数，供 glucose_summary 工具确定性取参

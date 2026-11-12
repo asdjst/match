@@ -32,3 +32,9 @@ class AnalystOutput(BaseModel):
     """分析节点结构化输出：每条断言必须带引用编号。"""
 
     assertions: list[Assertion] = Field(default_factory=list)
+
+
+class ComposedAnswer(BaseModel):
+    """writer 成文通道输出：把断言连成一段回答，引用编号原样保留。"""
+
+    text: str = ""

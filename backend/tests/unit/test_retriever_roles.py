@@ -23,7 +23,7 @@ class FakePort:
 def _state() -> dict:
     dag = TaskDAG(
         question="问题",
-        nodes=[NodeSpec(node_id="r1", role="retriever", instruction="检索", query="营收")],
+        nodes=[NodeSpec(node_id="r1", role="retriever", instruction="检索", query="米饭碳水")],
     )
     return {
         "question": "问题",
@@ -49,7 +49,7 @@ def test_retriever_writes_channel_report_to_node_results():
     assert result["status"] == "done"
     assert result["retrievals"] == port.last_report
     assert result["evidence_used"] == ["E1", "E2"]
-    assert port.queries == ["营收"]
+    assert port.queries == ["米饭碳水"]
     # 分配 evidence_id 后 channel 字段仍保留
     assert out["evidence"]["E1"]["channel"] == "local"
     assert out["evidence"]["E2"]["channel"] == "web"

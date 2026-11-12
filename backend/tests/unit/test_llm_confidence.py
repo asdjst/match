@@ -10,7 +10,7 @@ from core.services.confidence import LLMConfidence, llm_score
 
 
 def _pool() -> dict[str, Evidence]:
-    quotes = [("E1", "结论一：公司营收稳步增长。"), ("E2", "结论二：毛利率保持稳定。")]
+    quotes = [("E1", "结论一：米饭碳水高于杂粮饭。"), ("E2", "结论二：整餐血糖负荷偏高。")]
     return {
         eid: Evidence(doc_id=f"d{eid}", quote=q, score=0.5, evidence_id=eid)
         for eid, q in quotes
@@ -19,8 +19,8 @@ def _pool() -> dict[str, Evidence]:
 
 def _assertions() -> list[Assertion]:
     return [
-        Assertion(text="结论一：公司营收稳步增长", cites=["E1"]),
-        Assertion(text="结论二：毛利率保持稳定", cites=["E2"]),
+        Assertion(text="结论一：米饭碳水高于杂粮饭", cites=["E1"]),
+        Assertion(text="结论二：整餐血糖负荷偏高", cites=["E2"]),
     ]
 
 

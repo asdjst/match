@@ -25,7 +25,7 @@ def test_injection_blocked_with_reason(guard, text):
 
 
 def test_normal_question_allowed(guard):
-    q = "公司2024年营业收入是多少？"
+    q = "一碗米饭大概多少碳水？"
     v = guard.inspect_input(q)
     # 正常问题放行且原文透传
     assert v.allowed is True

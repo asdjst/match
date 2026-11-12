@@ -40,13 +40,13 @@ def test_retriever_ignores_self_dependency():
     state = {
         "question": "问题",
         "round_no": 0,
-        "dag": _dag(NodeSpec(node_id="r1", role="retriever", query="营收", depends_on=["r1"])),
+        "dag": _dag(NodeSpec(node_id="r1", role="retriever", query="米饭碳水", depends_on=["r1"])),
         "evidence": {},
         "node_results": {},
     }
     out = make_retriever(port)(state)
     assert out["node_results"]["r1"]["status"] == "done"
-    assert port.queries == ["营收"]
+    assert port.queries == ["米饭碳水"]
 
 
 class _Port:

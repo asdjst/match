@@ -1,25 +1,34 @@
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from langgraph.types import Command
 
+from app.api.deps import current_user
 from core.graph.events import NodeEventLog
 
 router = APIRouter()
 
 
+def _own_run(runs: dict, run_id: str, user: str) -> dict | None:
+    """内存快照按归属过滤：别人的 run 一律当作不存在，避免用 run_id 猜读。"""
+    state = runs.get(run_id)
+    if state is None or state.get("user_id", "local") != user:
+        return None
+    return state
+
+
 @router.get("/api/runs")
-async def list_runs(request: Request, limit: int = 50):
-    return {"runs": request.app.state.store.list_runs(limit)}
+async def list_runs(request: Request, limit: int = 50, user: str = Depends(current_user)):
+    return {"runs": request.app.state.store.list_runs(limit, user_id=user)}
 
 
 @router.get("/api/tasks/{run_id}")
-async def get_task(run_id: str, request: Request):
+async def get_task(run_id: str, request: Request, user: str = Depends(current_user)):
     runs = request.app.state.runs
-    state = runs.get(run_id)
+    state = _own_run(runs, run_id, user)
     if state is None:
         # 进程重启后从 SQLite 回查历史 run
-        state = request.app.state.store.get_run(run_id, with_session=True)
+        state = request.app.state.store.get_run(run_id, with_session=True, user_id=user)
         if state is None:
             raise HTTPException(404, f"任务不存在：{run_id}")
         return state
@@ -45,23 +54,24 @@ async def get_task(run_id: str, request: Request):
 
 
 @router.post("/api/tasks/{run_id}/approve")
-async def approve_task(run_id: str, request: Request):
+async def approve_task(run_id: str, request: Request, user: str = Depends(current_user)):
     runs = request.app.state.runs
-    state = runs.get(run_id)
+    state = _own_run(runs, run_id, user)
     # 进程重启后内存里没有 run：靠 SQLite 断点 + 落库快照恢复放行
-    snap = state if state is not None else request.app.state.store.get_run(run_id, with_session=True)
+    snap = state if state is not None else request.app.state.store.get_run(run_id, with_session=True, user_id=user)
     if snap is None:
         raise HTTPException(404, f"任务不存在：{run_id}")
     if not snap.get("pending_human"):
         raise HTTPException(409, "该任务不在待放行状态")
     config = {"configurable": {"thread_id": run_id}, "recursion_limit": 30}
     events = NodeEventLog(snap)
-    merged = {**snap, "pending_human": False}
+    # 快照落库时不含 user_id 列，恢复后仍要带上归属，否则内存缓存会认不出所有者
+    merged = {**snap, "pending_human": False, "user_id": user}
 
     def persist():
         record = events.snapshot(merged)
         runs[run_id] = record
-        request.app.state.store.save_run(run_id, record)
+        request.app.state.store.save_run(run_id, record, user_id=user)
         return record
 
     try:

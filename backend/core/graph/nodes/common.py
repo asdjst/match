@@ -7,7 +7,6 @@ from core.schemas.dag import Budget, TaskDAG
 from core.schemas.evidence import Evidence
 from core.services.injection import neutralize
 
-_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*亿")
 _CHANNEL_LABELS = {"local": "本地库", "web": "Web", "cloud": "云端网盘", "image": "拍照", "tool": "工具", "memory": "个人记录"}
 
 
@@ -133,16 +132,3 @@ def _evidence_block(pool: dict[str, Evidence]) -> str:
 def _next_id(pool: dict[str, Evidence]) -> str:
     ids = [int(m) for eid in pool for m in re.findall(r"E(\d+)", eid)]
     return f"E{max(ids, default=0) + 1}"
-
-
-def _year_numbers(pool: dict[str, Evidence]) -> list[float]:
-    """从含"营收/营业收入 …N亿"的证据里按出现顺序取前两个去重数值。"""
-    nums: list[float] = []
-    for ev in pool.values():
-        if "亿" not in ev.quote or not ("营收" in ev.quote or "营业收入" in ev.quote):
-            continue
-        for raw in _NUM_RE.findall(ev.quote):
-            v = float(raw)
-            if v not in nums:
-                nums.append(v)
-    return nums[:2]
