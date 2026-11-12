@@ -19,11 +19,13 @@ from adapters.retrieval.web import WebSearchRetriever
 from adapters.tools.fake import FakeTools
 from adapters.tools.mcp_client import MCPToolGateway
 from adapters.vision.food import FakeFoodAnalyzer, VlmFoodAnalyzer
+from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.food import router as food_router
 from app.api.meals import router as meals_router
 from app.api.tasks import router as tasks_router
 from core.graph.builder import build_graph
+from core.services.accounts import AccountStore, LoginThrottle
 from core.services.memory import SessionMemory
 from core.services.store import MealStore, RunStore
 from infra.config import Settings, get_settings
@@ -94,6 +96,7 @@ async def lifespan(app: FastAPI):
                 close()
             app.state.store.close()
             app.state.meals.close()
+            app.state.accounts.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -107,7 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=origins or ["*"],
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["content-type"],
+        allow_headers=["content-type", "authorization"],
     )
 
     @app.get("/api/health")
@@ -117,6 +120,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mode": settings.mode,
             "web_search": settings.web_search,
             "web_provider": settings.web_provider if settings.web_search else "off",
+            # 账号登录始终可用；未登录的请求归单机演示身份 local
+            "auth": "accounts",
             "version": "0.1.0",
         }
     app.state.settings = settings
@@ -139,7 +144,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     db_path = settings.db_path or Path(__file__).resolve().parent.parent / "data" / "runs.db"
     app.state.store = RunStore(db_path)
     app.state.meals = MealStore(db_path)
+    app.state.accounts = AccountStore(db_path)
+    app.state.login_throttle = LoginThrottle()
     app.state.memory = SessionMemory()
+    app.include_router(auth_router)
     app.include_router(chat_router)
     app.include_router(food_router)
     app.include_router(tasks_router)

@@ -13,9 +13,16 @@ def _fix_broken_no_proxy() -> None:
             os.environ[var] = ",".join(x for x in val.split(",") if x.strip() != "[::1]")
 
 
+def _use_local_model_cost_map() -> None:
+    """litellm 默认联网拉模型价目表，出网受限时首次调用要白等 30–90s 重试；
+    价目表只用于成本统计，用内置备份即可，也不影响断网演示。"""
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+
 def _load_env_file() -> None:
     """加载 backend/.env；已在 os.environ 的变量优先，不被覆盖。"""
     _fix_broken_no_proxy()
+    _use_local_model_cost_map()
     path = Path(__file__).resolve().parent.parent / ".env"
     if not path.exists():
         return
@@ -57,7 +64,7 @@ class Settings:
     mode: str = "fake"                  # fake | live
     r2r_base_url: str = "http://localhost:7272"
     r2r_api_key: str = ""
-    r2r_collection: str = "demo"
+    r2r_collection: str = "gluco"
     fast: TierConfig = field(default_factory=TierConfig)
     strong: TierConfig = field(default_factory=TierConfig)
     langfuse_public_key: str = ""
@@ -93,7 +100,7 @@ class Settings:
             mode=_env("MODE", "fake"),
             r2r_base_url=_env("R2R_BASE_URL", "http://localhost:7272"),
             r2r_api_key=_env("R2R_API_KEY"),
-            r2r_collection=_env("R2R_COLLECTION", "demo"),
+            r2r_collection=_env("R2R_COLLECTION", "gluco"),
             fast=TierConfig(
                 model=_env("FAST_MODEL", "openai/gpt-4o-mini"),
                 api_base=_env("FAST_BASE_URL"),
