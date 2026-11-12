@@ -1,7 +1,30 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { Button, Card, Stack, Text } from "@astryxdesign/core";
 import type { RunState } from "../store/runs";
-import { buildSteps, executionEntries, isGraphNode, STEP_LABEL } from "./ThinkingTimeline";
+import type { GraphNodeName } from "../types";
+import { buildSteps, executionEntries, isGraphNode, RUNNING_HINT, STEP_LABEL } from "./ThinkingTimeline";
+
+const NODE_CODE: Record<GraphNodeName, string> = {
+  planner: "PLANNER", retriever: "RETRIEVER", executor: "EXECUTOR",
+  analyst: "ANALYST", critic: "CRITIC", writer: "WRITER",
+};
+
+function clock(ms: number): string {
+  const s = Math.max(0, ms) / 1000;
+  const m = Math.floor(s / 60);
+  const rest = s - m * 60;
+  return m > 0 ? `${m}:${rest.toFixed(1).padStart(4, "0")}` : rest.toFixed(1).padStart(4, "0");
+}
+
+function useTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [active]);
+  return now;
+}
 
 export const EXECUTION_ICON = (
   <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -12,15 +35,6 @@ export const EXECUTION_ICON = (
 );
 const CLOSE_ICON = <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg>;
 
-function useTick(active: boolean) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const timer = window.setInterval(() => setTick((n) => n + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-}
-
 function stateTitle(run: RunState): string {
   if (run.approving) return "正在恢复执行";
   if (run.phase === "streaming") return "正在执行中";
@@ -29,23 +43,6 @@ function stateTitle(run: RunState): string {
   if (run.deliverable?.refused) return "已停止 · 安全限制";
   if (run.deliverable?.degraded) return "已完成 · 降级回答";
   return "执行已完成";
-}
-
-export function RunStatus({ run, onOpen, open }: { run: RunState; onOpen: () => void; open: boolean }) {
-  useTick(run.phase === "streaming");
-  const elapsed = Math.max(0, ((run.finishedAt ?? Date.now()) - run.startedAt) / 1000);
-  const node = run.activeNode && isGraphNode(run.activeNode) ? run.activeNode : null;
-  return (
-    <Button className={`run-status-bar is-${run.phase}`} label={stateTitle(run)} variant="ghost" width="100%" aria-controls="execution-card" aria-expanded={open} onClick={onOpen}>
-      <Stack direction="horizontal" gap={2} vAlign="center" width="100%">
-        <Text className={`execution-dot is-${run.phase}`} aria-hidden="true">●</Text>
-        <Text size="sm" weight="semibold">{stateTitle(run)}</Text>
-        <Text size="2xs" color="secondary" hasTabularNumbers>{run.phase === "streaming" ? `${Math.floor(elapsed)}s` : elapsed > 0 ? `${elapsed.toFixed(1)}s` : "历史记录"}</Text>
-        {node && run.phase === "streaming" ? <Text className="execution-current-name" size="2xs" color="secondary" maxLines={1}>{STEP_LABEL[node]}</Text> : null}
-        <Text className="execution-bar-action" size="2xs" color="secondary">{open ? "收起" : "展开"}</Text>
-      </Stack>
-    </Button>
-  );
 }
 
 export function AgentFeedback({ run }: { run: RunState }) {
@@ -123,24 +120,41 @@ export function ExecutionCard({ run, onClose, anchorRef }: {
   };
   const steps = run ? buildSteps(run) : [];
   const elapsed = run ? Math.max(0, ((run.finishedAt ?? Date.now()) - run.startedAt) / 1000) : 0;
+  const now = useTick(live);
+  const activeIndex = active ? steps.findIndex((step) => step.node === active) : -1;
+  const stepNo = activeIndex >= 0 ? activeIndex + 1 : Math.min(entries.length + 1, steps.length || 6);
+  const nodeMs = run ? now - (run.activeNodeAt ?? run.startedAt) : 0;
+  const totalMs = run ? now - run.startedAt : 0;
   return (
     <Stack as="aside" ref={panelRef} id="execution-card" className={`execution-card${live ? " is-live" : ""}`} aria-label={live ? "当前执行步骤" : "执行过程"}>
       <Card padding={0} className="execution-card-surface">
         <Button className="execution-close" label="收起执行卡片" variant="ghost" isIconOnly icon={CLOSE_ICON} onClick={close} />
         {!run ? <Stack className="execution-card-scroll" padding={4}>
           <Text size="sm" color="secondary">发送一个问题后，这里会自动聚焦正在工作的智能体。</Text>
-        </Stack> : live ? <Stack className="execution-active" gap={2} hAlign="center" padding={4}>
-          <Stack direction="horizontal" gap={1} className="execution-segments" aria-label="各智能体进度">
-            {steps.map((step) => <Text key={step.node} className={`execution-segment is-${step.status}`} aria-label={STEP_LABEL[step.node]}> </Text>)}
+        </Stack> : live ? <Stack ref={focusRef} className="exec-hud" gap={2} padding={3}>
+          <Stack direction="horizontal" gap={2} align="center" className="exec-hud-row">
+            <svg className="exec-hud-core" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" className="exec-hud-core-ring" />
+              <path d="M12 3a9 9 0 0 1 9 9" className="exec-hud-core-sweep" />
+              <circle cx="12" cy="12" r="2.4" className="exec-hud-core-dot" />
+            </svg>
+            <Stack gap={0} className="exec-hud-main">
+              <Text size="sm" weight="semibold" className="exec-hud-label">{active ? STEP_LABEL[active] : latest ? "交接下一步" : "准备任务"}</Text>
+              <Text size="2xs" className="exec-hud-code" hasTabularNumbers>
+                {`${active ? NODE_CODE[active] : "HANDOFF"} · ${String(stepNo).padStart(2, "0")}/${String(steps.length || 6).padStart(2, "0")} · R${(run.roundNo ?? 0) + 1}`}
+              </Text>
+            </Stack>
+            <Stack gap={0} hAlign="end" className="exec-hud-clock">
+              <Text size="sm" className="exec-hud-timer" hasTabularNumbers>{`${clock(nodeMs)}s`}</Text>
+              <Text size="2xs" className="exec-hud-total" hasTabularNumbers>{`TOTAL ${clock(totalMs)}s`}</Text>
+            </Stack>
           </Stack>
-          <svg className="execution-flow-arrow" viewBox="0 0 32 56" width="32" height="56" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path className="execution-flow-dashes" d="M16 4v36" strokeDasharray="7 7" />
-            <path className="execution-flow-head" d="m8 33 8 9 8-9" />
-            <circle className="execution-flow-spark" cx="16" cy="6" r="2.8" fill="currentColor" stroke="none" />
-          </svg>
-          <Stack ref={focusRef} className="execution-focus" hAlign="center" vAlign="center" padding={3}>
-            <Text as="h3" size="lg" weight="semibold" className="execution-focus-label">{active ? STEP_LABEL[active] : latest ? "交接下一步" : "准备任务"}</Text>
+          <Stack direction="horizontal" gap={1} className="exec-hud-track" aria-label="各智能体进度">
+            {steps.map((step) => <Text key={step.node} className={`exec-hud-seg is-${step.status}`} aria-label={STEP_LABEL[step.node]}> </Text>)}
           </Stack>
+          <Text size="2xs" color="secondary" className="exec-hud-hint">
+            {active ? RUNNING_HINT[active] : "正在交接给下一个智能体。"}
+          </Text>
         </Stack> : <Stack className="execution-card-scroll" gap={4} padding={4}>
           <Stack ref={focusRef} className={`execution-result is-${run.phase}`} gap={1}>
             <Text size="sm" weight="semibold">{stateTitle(run)}</Text>

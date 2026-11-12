@@ -16,13 +16,16 @@ import { Theme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import { UiProvider, useUi } from "./store/ui";
 import { RunsProvider } from "./store/runs";
+import { AuthProvider } from "./store/auth";
 import App from "./App";
 
 function ThemedApp() {
   const { mode } = useUi();
   return (
     <Theme theme={neutralTheme} mode={mode}>
-      <App />
+      <AuthProvider>
+        <App />
+      </AuthProvider>
     </Theme>
   );
 }

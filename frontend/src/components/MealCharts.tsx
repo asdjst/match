@@ -60,7 +60,8 @@ export function DailyCarbsChart({ meals, days = 7 }: { meals: MealRecord[]; days
   }, [meals, days]);
 
   const H = 176;
-  const padBox = { l: 34, r: 10, t: 20, b: 30 };
+  // 刻度文字左对齐到 x=0、右侧不留白：图的墨迹边界与回答正文左右对齐
+  const padBox = { l: 30, r: 0, t: 20, b: 30 };
   const values = data.map((d) => d.carbs);
   const yMax = Math.max(60, Math.ceil(Math.max(...values, 0) / 20) * 20);
   const plotW = W - padBox.l - padBox.r;
@@ -79,8 +80,8 @@ export function DailyCarbsChart({ meals, days = 7 }: { meals: MealRecord[]; days
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`最近 ${days} 天每日碳水合计`}>
         {grid.map((v) => (
           <g key={v}>
-            <line x1={padBox.l} x2={W - padBox.r} y1={y(v)} y2={y(v)} className="trend-grid" />
-            <text x={padBox.l - 8} y={y(v) + 3} textAnchor="end" className="trend-axis">
+            <line x1={padBox.l} x2={W} y1={y(v)} y2={y(v)} className="trend-grid" />
+            <text x={0} y={y(v) + 3} className="trend-axis">
               {Math.round(v)}
             </text>
           </g>
@@ -149,7 +150,7 @@ export function MealCarbsChart({ meals }: { meals: MealRecord[] }) {
               <rect x={left} y={cy + 2} width={Math.max(0, width)} height={12} rx={3} className="bar-rect">
                 <title>{`${foodsText(row.meal)} · 碳水 ${row.carbs}g`}</title>
               </rect>
-              <text x={left + barMax + 6} y={cy + 12} className="bar-value">
+              <text x={W} y={cy + 12} textAnchor="end" className="bar-value">
                 {row.carbs}g
               </text>
             </g>
@@ -198,16 +199,18 @@ export function GlucoseTrendChart({
   }
 
   const H = 180;
-  const padBox = { l: 38, r: 14, t: 14, b: 26 };
+  const padBox = { l: 30, r: 0, t: 14, b: 26 };
+  const dotR = 3.5;
   const values = points.map((p) => p.v);
   const yMin = Math.min(4, Math.floor(Math.min(...values) - 1));
   const yMax = Math.max(12, Math.ceil(Math.max(...values) + 1));
   const tMin = points[0].t;
   const tMax = points[points.length - 1].t;
+  // 末点圆心内缩一个半径，圆点右缘正好落在正文右边界，也不被 viewBox 裁掉
   const x = (t: number) =>
     tMax === tMin
-      ? (padBox.l + W - padBox.r) / 2
-      : padBox.l + ((t - tMin) / (tMax - tMin)) * (W - padBox.l - padBox.r);
+      ? (padBox.l + W - dotR) / 2
+      : padBox.l + ((t - tMin) / (tMax - tMin)) * (W - dotR - padBox.l);
   const y = (v: number) => padBox.t + ((yMax - v) / (yMax - yMin)) * (H - padBox.t - padBox.b);
   const grid = [4, 7, 10, 13].filter((v) => v >= yMin && v <= yMax);
   const path = points.map((p) => `${x(p.t)},${y(p.v)}`).join(" ");
@@ -219,22 +222,22 @@ export function GlucoseTrendChart({
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`最近 ${days} 天血糖折线`}>
         {grid.map((v) => (
           <g key={v}>
-            <line x1={padBox.l} x2={W - padBox.r} y1={y(v)} y2={y(v)} className="trend-grid" />
-            <text x={padBox.l - 8} y={y(v) + 3} textAnchor="end" className="trend-axis">
+            <line x1={padBox.l} x2={W} y1={y(v)} y2={y(v)} className="trend-grid" />
+            <text x={0} y={y(v) + 3} className="trend-axis">
               {v}
             </text>
           </g>
         ))}
         <polyline points={path} className="trend-line" fill="none" />
         {points.map((p, i) => (
-          <circle key={i} cx={x(p.t)} cy={y(p.v)} r={3.5} className="trend-dot">
+          <circle key={i} cx={x(p.t)} cy={y(p.v)} r={dotR} className="trend-dot">
             <title>{p.label}</title>
           </circle>
         ))}
         <text x={padBox.l} y={H - 6} className="trend-axis">
           {first}
         </text>
-        <text x={W - padBox.r} y={H - 6} textAnchor="end" className="trend-axis">
+        <text x={W} y={H - 6} textAnchor="end" className="trend-axis">
           {last}
         </text>
       </svg>

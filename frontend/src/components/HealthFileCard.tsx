@@ -74,6 +74,7 @@ export default function HealthFileCard({ open, onClose, anchorRef }: HealthFileC
   const [rendered, setRendered] = useState(open);
   const [section, setSection] = useState<SectionKey>("basics");
   const [dragging, setDragging] = useState(false);
+  const [wide, setWide] = useState(false);
   const [hint, setHint] = useState("向下滚动查看更多");
 
   const place = useCallback((x: number, y: number) => {
@@ -173,6 +174,13 @@ export default function HealthFileCard({ open, onClose, anchorRef }: HealthFileC
     return () => observer.disconnect();
   }, [rendered, place, defaultPosition]);
 
+  // 卡片自身尺寸变了（展开/收起宽报告）父容器不会 resize，这里重新夹一次位置
+  useLayoutEffect(() => {
+    if (!rendered) return;
+    const next = moved.current && position.current ? position.current : defaultPosition();
+    place(next.x, next.y);
+  }, [wide, rendered, place, defaultPosition]);
+
   const goTo = (key: SectionKey) => {
     const scroller = scrollRef.current;
     if (!scroller) return;
@@ -251,7 +259,7 @@ export default function HealthFileCard({ open, onClose, anchorRef }: HealthFileC
     <section
       ref={paperRef}
       id="health-file-card"
-      className={`health-file${dragging ? " is-dragging" : ""}`}
+      className={`health-file${dragging ? " is-dragging" : ""}${wide ? " is-wide" : ""}`}
       role="dialog"
       aria-modal="false"
       aria-labelledby="health-file-title"
@@ -293,6 +301,32 @@ export default function HealthFileCard({ open, onClose, anchorRef }: HealthFileC
             <span id="health-file-title">个人健康档案</span>
             <small>HEALTH RECORD · 拖动此处</small>
           </span>
+        </button>
+        <button
+          type="button"
+          className="health-file-wide"
+          aria-pressed={wide}
+          aria-label={wide ? "收起为小卡片" : "展开为宽报告"}
+          title={wide ? "收起为小卡片" : "展开为宽报告"}
+          onClick={() => setWide(!wide)}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="15"
+            height="15"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            {wide ? (
+              <path d="M9 4v5H4M15 20v-5h5M20 9h-5V4M4 15h5v5" />
+            ) : (
+              <path d="M4 9V4h5M20 15v5h-5M15 4h5v5M9 20H4v-5" />
+            )}
+          </svg>
         </button>
         <button type="button" className="health-file-close" aria-label="收起档案" onClick={onClose}>
           <svg

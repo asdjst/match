@@ -19,7 +19,6 @@ import type {
   TaskSnapshot,
 } from "../types";
 import { liveTransport, listRuns, probeBackend } from "../api/client";
-import { mockTransport } from "../api/mock";
 import type { ChatTransport } from "../api/transport";
 
 export type RunPhase = "streaming" | "done" | "interrupted" | "error";
@@ -47,7 +46,7 @@ export interface RunState {
   activeNode?: string | null;
   activeNodeAt?: number | null;
   pendingHuman?: boolean;
-  /** GET /api/tasks 快照里的 node_results（live 在 done 后补拉；mock 直接内置） */
+  /** GET /api/tasks 快照里的 node_results（done 后补拉） */
   nodeResults: Record<string, AgentResult> | null;
   /** planner 任务图与全量证据池（快照补拉，供轨迹页展示各阶段产出） */
   dag: DagPlan | null;
@@ -56,7 +55,6 @@ export interface RunState {
   roundNo: number | null;
   approved: boolean;
   approving: boolean;
-  source: "mock" | "live";
   /** 本条提问附带的餐食识别结果（发送后仍保留，供消息里回看） */
   food?: FoodContext;
   startedAt: number;
@@ -90,7 +88,12 @@ interface RunsContextValue {
   /** SQLite 持久化的历史运行（重启后仍可回放） */
   history: RunSummary[];
   reloadHistory: () => Promise<void>;
-  transportKind: "mock" | "live" | "probing";
+  /** probing=正在探测；offline=后端不可达；unauthorized=后端在跑但登录令牌失效。两种情况都禁止提问，绝不返回内置答案 */
+  transportKind: "probing" | "live" | "offline" | "unauthorized";
+  /** 离线或登录失效时重新探测后端 */
+  reconnect: () => Promise<void>;
+  /** 换账号：清掉上一个人的问答与历史，再按新身份重连 */
+  switchIdentity: () => Promise<void>;
 }
 
 function snapshotEvents(snap: TaskSnapshot): NodeEventLog[] {
@@ -113,10 +116,8 @@ export function RunsProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<RunState[]>([]);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [activeRunKey, setActiveRunKey] = useState<string | null>(null);
-  const [transportKind, setTransportKind] = useState<"mock" | "live" | "probing">(
-    import.meta.env?.VITE_MOCK === "1" ? "mock" : "probing",
-  );
-  const transportRef = useRef<ChatTransport>(mockTransport);
+  const [transportKind, setTransportKind] = useState<"probing" | "live" | "offline" | "unauthorized">("probing");
+  const transportRef = useRef<ChatTransport>(liveTransport);
   const abortRef = useRef<AbortController | null>(null);
   // 会话 id 既要给 React 渲染（侧栏高亮），也要给 startRun 的同步闭包读
   const initialSession = useMemo(() => newSessionId(), []);
@@ -131,27 +132,39 @@ export function RunsProvider({ children }: { children: ReactNode }) {
     return unregister;
   }, []);
 
-  // 启动时探测后端；VITE_MOCK=1 直接 mock
-  useEffect(() => {
-    if (import.meta.env?.VITE_MOCK === "1") return;
-    let cancelled = false;
-    probeBackend().then((ok) => {
-      if (cancelled) return;
-      if (ok) {
-        transportRef.current = liveTransport;
-        setTransportKind("live");
-        void listRuns().then((items) => {
-          if (!cancelled) setHistory(items);
-        });
-      } else {
-        transportRef.current = mockTransport;
-        setTransportKind("mock");
+  // 后端不可达就停在 offline：宁可拒绝提问，也不能拿内置数据冒充回答
+  const connect = useCallback(async () => {
+    setTransportKind("probing");
+    try {
+      const probe = await probeBackend();
+      if (probe !== "live") {
+        setTransportKind(probe);
+        return;
       }
-    });
-    return () => {
-      cancelled = true;
-    };
+      const items = await listRuns();
+      setHistory(items);
+      setTransportKind("live");
+    } catch {
+      setTransportKind("offline");
+    }
   }, []);
+
+  useEffect(() => {
+    void connect();
+  }, [connect]);
+
+  // 换身份必须连内存里的问答一起清：否则新账号会看到上一个人的回答与证据
+  const switchIdentity = useCallback(async () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setRuns([]);
+    setHistory([]);
+    setActiveRunKey(null);
+    const sid = newSessionId();
+    activeSessionRef.current = sid;
+    setActiveSessionId(sid);
+    await connect();
+  }, [connect]);
 
   const patchRun = useCallback((key: string, patch: (r: RunState) => RunState) => {
     setRuns((prev) => prev.map((r) => (r.key === key ? patch(r) : r)));
@@ -179,7 +192,6 @@ export function RunsProvider({ children }: { children: ReactNode }) {
         roundNo: null,
         approved: false,
         approving: false,
-        source: transportRef.current.kind,
         food,
         startedAt: Date.now(),
         finishedAt: null,
@@ -273,7 +285,6 @@ export function RunsProvider({ children }: { children: ReactNode }) {
   );
 
   const reloadHistory = useCallback(async () => {
-    if (transportRef.current.kind !== "live") return;
     setHistory(await listRuns());
   }, []);
 
@@ -306,7 +317,6 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       roundNo: snap.round_no,
       approved: false,
       approving: false,
-      source: "live",
       food:
         items.length > 0
           ? {
@@ -407,6 +417,8 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       history,
       reloadHistory,
       transportKind,
+      reconnect: connect,
+      switchIdentity,
     }),
     [
       runs,
@@ -420,6 +432,8 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       history,
       reloadHistory,
       transportKind,
+      connect,
+      switchIdentity,
     ],
   );
 
@@ -470,8 +484,8 @@ function reduceEvent(r: RunState, ev: SseEvent, now: number, deltaMs: () => numb
 function finalize(r: RunState, transport: ChatTransport): RunState {
   const finishedAt = Date.now();
   if (r.deliverable) {
-    // live：结束后补拉快照，拿 node_results / verdict / round_no 丰富轨迹页
-    if (transport.kind === "live" && r.runId) {
+    // 结束后补拉快照，拿 node_results / verdict / round_no 丰富执行过程
+    if (r.runId) {
       void transport.getTask(r.runId).then((snap) => {
         if (!snap) return;
         setRunsGlobal(r.key, {

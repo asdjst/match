@@ -83,6 +83,8 @@ export interface MealFood {
   grams: number;
   carbs_g?: number | null;
   gl?: number | null;
+  /** 碳水由食物库折算，不是用户自填 */
+  estimated?: boolean;
 }
 
 export interface GlucoseReading {
@@ -134,6 +136,11 @@ export interface Assertion {
 export interface Deliverable {
   question: string;
   assertions: Assertion[];
+  /** 成文智能体写出的连贯回答；为空时按断言逐条呈现 */
+  answer?: string | null;
+  answer_source?: "llm" | "assertions";
+  /** 未成文的原因，只在执行轨迹里核对 */
+  answer_note?: string | null;
   citations: Evidence[];
   trace_id: string;
   confidence: number;

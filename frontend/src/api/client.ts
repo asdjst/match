@@ -14,8 +14,101 @@ import type {
 } from "../types";
 import type { ChatTransport } from "./transport";
 
-/** 单机演示固定一个用户标识；以后接登录再换成真实账号。 */
-export const USER_ID = "local";
+const TOKEN_KEY = "glucoguard.token";
+
+export interface Account {
+  user_id: string;
+  username: string;
+  created_at: string;
+}
+
+export interface Session {
+  token: string;
+  expires_at: string;
+  user: Account;
+}
+
+/** 登录令牌只存本机浏览器；没有令牌时后端按单机演示身份 local 记账。 */
+export function readToken(): string {
+  if (typeof localStorage === "undefined") return "";
+  try {
+    return localStorage.getItem(TOKEN_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveToken(token: string): void {
+  const value = token.trim();
+  if (value) localStorage.setItem(TOKEN_KEY, value);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+/** 任何个人接口回 401 都说明会话没了：由 AuthProvider 清令牌、回到未登录态。 */
+let unauthorizedHandler: (() => void) | null = null;
+
+export function onUnauthorized(fn: () => void): () => void {
+  unauthorizedHandler = fn;
+  return () => {
+    if (unauthorizedHandler === fn) unauthorizedHandler = null;
+  };
+}
+
+/** 身份由后端从令牌解析，请求体里不再带 user_id。 */
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const token = readToken();
+  return { ...extra, ...(token ? { authorization: `Bearer ${token}` } : {}) };
+}
+
+async function detailOf(resp: Response, action: string): Promise<string> {
+  try {
+    const body = (await resp.json()) as { detail?: unknown };
+    if (typeof body.detail === "string" && body.detail) return body.detail;
+  } catch {
+    // 非 JSON 错误体，保留状态码文案
+  }
+  return `${action}（HTTP ${resp.status}）`;
+}
+
+/** 401 要说清是登录过期，不能和「后端挂了」混为一谈。 */
+async function failure(resp: Response, action: string): Promise<Error> {
+  if (resp.status === 401) {
+    unauthorizedHandler?.();
+    return new Error("登录已过期，请重新登录后继续");
+  }
+  return new Error(await detailOf(resp, action));
+}
+
+async function credentials(path: string, username: string, password: string, action: string): Promise<Session> {
+  const resp = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  // 登录失败的 401 是「密码不对」，不是会话过期，不能触发全局登出
+  if (!resp.ok) throw new Error(await detailOf(resp, action));
+  return (await resp.json()) as Session;
+}
+
+export function registerAccount(username: string, password: string): Promise<Session> {
+  return credentials("/api/auth/register", username, password, "注册失败");
+}
+
+export function loginAccount(username: string, password: string): Promise<Session> {
+  return credentials("/api/auth/login", username, password, "登录失败");
+}
+
+export async function logoutAccount(): Promise<void> {
+  await fetch("/api/auth/logout", { method: "POST", headers: authHeaders() }).catch(() => undefined);
+}
+
+/** /api/auth/me 不会 401：expired=true 表示本地还留着失效令牌。 */
+export async function currentAccount(): Promise<{ user: Account | null; expired: boolean }> {
+  const resp = await fetch("/api/auth/me", { headers: authHeaders({ accept: "application/json" }) });
+  if (!resp.ok) throw new Error(await detailOf(resp, "读取登录状态失败"));
+  const data = (await resp.json()) as { user: Account | null; expired?: boolean };
+  return { user: data.user ?? null, expired: Boolean(data.expired) };
+}
 
 /** 逐块解析 SSE 字节流为事件对象 */
 async function* parseSse(
@@ -76,18 +169,24 @@ function readProfile() {
   }
 }
 
-export async function probeBackend(timeoutMs = 2500): Promise<boolean> {
+export type BackendProbe = "live" | "unauthorized" | "offline";
+
+export async function probeBackend(timeoutMs = 2500): Promise<BackendProbe> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    // 任意 run_id 都会 404，但只要收到 HTTP 响应即说明后端可达
-    const resp = await fetch(`/api/tasks/__probe__`, {
+    const resp = await fetch(`/api/runs?limit=1`, {
       signal: ctrl.signal,
-      headers: { accept: "application/json" },
+      headers: authHeaders({ accept: "application/json" }),
     });
-    return resp.status > 0;
+    // 后端在应答但拒绝身份：属于「登录过期」，不是「后端不可达」
+    if (resp.status === 401) return "unauthorized";
+    // 必须确认是后端在应答：dev 代理在后端挂掉时也会回 500，只看 status>0 会误判为可达
+    if (!resp.ok) return "offline";
+    const data = (await resp.json()) as { runs?: unknown };
+    return Array.isArray(data.runs) ? "live" : "offline";
   } catch {
-    return false;
+    return "offline";
   } finally {
     clearTimeout(timer);
   }
@@ -95,7 +194,7 @@ export async function probeBackend(timeoutMs = 2500): Promise<boolean> {
 
 export async function getTask(runId: string): Promise<TaskSnapshot | null> {
   try {
-    const resp = await fetch(`/api/tasks/${encodeURIComponent(runId)}`);
+    const resp = await fetch(`/api/tasks/${encodeURIComponent(runId)}`, { headers: authHeaders() });
     if (!resp.ok) return null;
     return (await resp.json()) as TaskSnapshot;
   } catch {
@@ -105,7 +204,7 @@ export async function getTask(runId: string): Promise<TaskSnapshot | null> {
 
 export async function listRuns(limit = 50): Promise<RunSummary[]> {
   try {
-    const resp = await fetch(`/api/runs?limit=${limit}`);
+    const resp = await fetch(`/api/runs?limit=${limit}`, { headers: authHeaders() });
     if (!resp.ok) return [];
     const data = (await resp.json()) as { runs?: RunSummary[] };
     return data.runs ?? [];
@@ -114,42 +213,29 @@ export async function listRuns(limit = 50): Promise<RunSummary[]> {
   }
 }
 
-export async function analyzeFood(file: File): Promise<FoodAnalysis> {  const form = new FormData();
+export async function analyzeFood(file: File): Promise<FoodAnalysis> {
+  const form = new FormData();
   form.append("file", file);
-  const resp = await fetch(`/api/food/analyze`, { method: "POST", body: form });
-  if (!resp.ok) {
-    let detail = `识别失败（HTTP ${resp.status}）`;
-    try {
-      const body = (await resp.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      // 非 JSON 错误体，保留状态码文案
-    }
-    throw new Error(detail);
-  }
+  const resp = await fetch(`/api/food/analyze`, { method: "POST", headers: authHeaders(), body: form });
+  if (!resp.ok) throw await failure(resp, "识别失败");
   return (await resp.json()) as FoodAnalysis;
 }
 
+/** 读失败必须抛出：返回空数组会被上层当成“没有记录”，把后端故障说成空档案。 */
 export async function listMeals(limit = 50): Promise<MealRecord[]> {
-  try {
-    const resp = await fetch(`/api/meals?user_id=${encodeURIComponent(USER_ID)}&limit=${limit}`);
-    if (!resp.ok) return [];
-    const data = (await resp.json()) as { meals?: MealRecord[] };
-    return data.meals ?? [];
-  } catch {
-    return [];
-  }
+  const resp = await fetch(`/api/meals?limit=${limit}`, { headers: authHeaders() });
+  if (!resp.ok) throw await failure(resp, "读取餐食记录失败");
+  const data = (await resp.json()) as { meals?: MealRecord[] };
+  return data.meals ?? [];
 }
 
 export async function createMeal(draft: MealDraft): Promise<MealRecord> {
   const resp = await fetch(`/api/meals`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...draft, user_id: USER_ID }),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(draft),
   });
-  if (!resp.ok) {
-    throw new Error(`记录失败（HTTP ${resp.status}）`);
-  }
+  if (!resp.ok) throw await failure(resp, "记录失败");
   const data = (await resp.json()) as { meal: MealRecord };
   return data.meal;
 }
@@ -160,61 +246,63 @@ export async function updateMeal(
 ): Promise<MealRecord> {
   const resp = await fetch(`/api/meals/${encodeURIComponent(mealId)}`, {
     method: "PATCH",
-    headers: { "content-type": "application/json" },
+    headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(patch),
   });
-  if (!resp.ok) {
-    throw new Error(`更新失败（HTTP ${resp.status}）`);
-  }
+  if (!resp.ok) throw await failure(resp, "更新失败");
   return ((await resp.json()) as { meal: MealRecord }).meal;
 }
 
 export async function deleteMeal(mealId: string): Promise<void> {
-  const resp = await fetch(`/api/meals/${encodeURIComponent(mealId)}`, { method: "DELETE" });
-  if (!resp.ok) throw new Error(`删除失败（HTTP ${resp.status}）`);
+  const resp = await fetch(`/api/meals/${encodeURIComponent(mealId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!resp.ok) throw await failure(resp, "删除失败");
 }
 
 export async function addGlucose(
   mealId: string,
   valueMmol: number,
   minutesAfter = 120,
+  measuredAt?: string,
 ): Promise<GlucoseReading> {
   const resp = await fetch(`/api/meals/${encodeURIComponent(mealId)}/glucose`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ value_mmol: valueMmol, minutes_after: minutesAfter }),
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      value_mmol: valueMmol,
+      minutes_after: minutesAfter,
+      measured_at: measuredAt ?? null,
+    }),
   });
-  if (!resp.ok) throw new Error(`血糖记录失败（HTTP ${resp.status}）`);
+  if (!resp.ok) throw await failure(resp, "血糖记录失败");
   return ((await resp.json()) as { reading: GlucoseReading }).reading;
 }
 
 export async function deleteGlucose(mealId: string, readingId: string): Promise<void> {
   const resp = await fetch(
     `/api/meals/${encodeURIComponent(mealId)}/glucose/${encodeURIComponent(readingId)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: authHeaders() },
   );
-  if (!resp.ok) throw new Error(`删除血糖失败（HTTP ${resp.status}）`);
+  if (!resp.ok) throw await failure(resp, "删除血糖失败");
 }
 
 export const liveTransport: ChatTransport = {
-  kind: "live",
-
   async *stream(question, sessionId, signal, food) {
     const resp = await fetch(`/api/chat`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: authHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         session_id: sessionId,
-        user_id: USER_ID,
         question,
         ...(food ? { image_id: food.image_id, food_items: food.food_items } : {}),
         profile: readProfile(),
       }),
       signal,
     });
-    if (!resp.ok || !resp.body) {
-      throw new Error(`后端 /api/chat 响应异常（HTTP ${resp.status}）`);
-    }
+    if (!resp.ok) throw await failure(resp, "提问失败");
+    if (!resp.body) throw new Error("后端 /api/chat 未返回流式响应");
     yield* parseSse(resp.body, signal);
   },
 
@@ -226,12 +314,10 @@ export const liveTransport: ChatTransport = {
     // 兼容三种后端实现：直接返回 JSON（含 deliverable）、返回 SSE、或返回空由前端轮询。
     const resp = await fetch(`/api/tasks/${encodeURIComponent(runId)}/approve`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: authHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ action: "approve" }),
     });
-    if (!resp.ok) {
-      throw new Error(`放行失败（HTTP ${resp.status}）`);
-    }
+    if (!resp.ok) throw await failure(resp, "放行失败");
     const contentType = resp.headers.get("content-type") ?? "";
     if (contentType.includes("text/event-stream") && resp.body) {
       let deliverable: Deliverable | null = null;

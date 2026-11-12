@@ -1,11 +1,10 @@
 /**
- * 传输层公共接口：live（fetch SSE）与 mock（内置数据）各自实现同一套形状，
- * store 不感知差异。事件/响应结构逐字对齐 backend 契约，不许改。
+ * 传输层接口：事件/响应结构逐字对齐 backend 契约，不许改。
+ * 只有 live 一种实现——后端不可达时必须显式报错，不允许用内置数据冒充回答。
  */
 import type { Deliverable, FoodContext, RunSummary, SseEvent, TaskSnapshot } from "../types";
 
 export interface ChatTransport {
-  readonly kind: "mock" | "live";
   /** POST /api/chat 的 SSE 流 */
   stream(
     question: string,

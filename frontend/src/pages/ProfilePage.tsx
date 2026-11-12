@@ -6,10 +6,12 @@ import { useCallback, useEffect, useMemo, useState, type RefObject } from "react
 import { createPortal } from "react-dom";
 import { Banner, Button, EmptyState, Text } from "@astryxdesign/core";
 import { addGlucose, deleteGlucose, deleteMeal, listMeals } from "../api/client";
+import { AuthDialog } from "../components/AuthDialog";
 import { MealLogDialog, formatEatenAt } from "../components/MealLogDialog";
-import { DailyCarbsChart, GlucoseTrendChart } from "../components/MealCharts";
+import HealthTrends from "../components/HealthTrends";
+import { useAuth } from "../store/auth";
 import { useRuns } from "../store/runs";
-import type { MealRecord, MealType } from "../types";
+import type { MealDraft, MealRecord, MealType } from "../types";
 
 interface Profile {
   height: string;
@@ -41,49 +43,19 @@ function foodsText(meal: MealRecord): string {
   return meal.foods.map((f) => `${f.name} ${Math.round(f.grams)}g`).join("、");
 }
 
+/** 碳水是食物库折算的还是用户自填的，要分清楚 */
+function carbsText(meal: MealRecord): string {
+  if (meal.carbs_g == null) return "碳水未填";
+  const estimated = meal.foods.filter((f) => f.estimated).length;
+  const tag = estimated === 0 ? "" : estimated === meal.foods.length ? "（估算）" : "（含估算）";
+  return `碳水约 ${meal.carbs_g}g${tag}`;
+}
+
 /** 0 分钟表示餐前；整小时按小时显示，其余按分钟 */
 function glucoseTiming(minutes: number): string {
   if (minutes <= 0) return "餐前";
   if (minutes % 60 === 0) return `餐后 ${minutes / 60} 小时`;
   return `餐后 ${minutes} 分钟`;
-}
-
-function ByFood({ meals }: { meals: MealRecord[] }) {
-  const stats = useMemo(() => {
-    const map = new Map<string, { count: number; total: number }>();
-    for (const meal of meals) {
-      if (!meal.readings.length) continue;
-      const avg = meal.readings.reduce((s, r) => s + r.value_mmol, 0) / meal.readings.length;
-      for (const name of new Set(meal.foods.map((f) => f.name))) {
-        const cur = map.get(name) ?? { count: 0, total: 0 };
-        map.set(name, { count: cur.count + 1, total: cur.total + avg });
-      }
-    }
-    return [...map.entries()]
-      .map(([name, v]) => ({ name, count: v.count, avg: v.total / v.count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 6);
-  }, [meals]);
-
-  if (stats.length === 0) {
-    return (
-      <Text size="sm" color="secondary">
-        补过血糖之后，这里会按食物汇总“吃过几次、平均血糖多少”，只做描述，不排名好坏。
-      </Text>
-    );
-  }
-
-  return (
-    <div className="by-food-list">
-      {stats.map((row) => (
-        <div className="by-food-row" key={row.name}>
-          <strong>{row.name}</strong>
-          <span>{row.count} 次记录</span>
-          <span>平均 {row.avg.toFixed(1)} mmol/L</span>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 export default function ProfilePage({
@@ -96,10 +68,14 @@ export default function ProfilePage({
   onScroll?: () => void;
 }) {
   const { transportKind } = useRuns();
+  const { account } = useAuth();
   const [profile, setProfile] = useState<Profile>(load);
+  const [authMode, setAuthMode] = useState<"login" | "register" | null>(null);
   const [tab, setTab] = useState<"records" | "trend">("records");
   const [meals, setMeals] = useState<MealRecord[]>([]);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
+  const [editing, setEditing] = useState<MealRecord | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [glucoseFor, setGlucoseFor] = useState<string | null>(null);
@@ -118,12 +94,24 @@ export default function ProfilePage({
 
   const refresh = useCallback(async () => {
     setError(null);
-    setMeals(await listMeals(100));
+    try {
+      setMeals(await listMeals(100));
+      setLoadFailed(false);
+    } catch {
+      // 读不到 ≠ 没有记录：保留旧数据并显式报错，别把空档案当成事实
+      setLoadFailed(true);
+    }
   }, []);
 
+  // 换账号或重连都先清掉手上这份记录：不能让上一个人的餐食留在屏幕上
   useEffect(() => {
+    setMeals([]);
+    setLoadFailed(false);
     if (transportKind === "live") void refresh();
-  }, [transportKind, refresh]);
+  }, [account?.user_id, transportKind, refresh]);
+
+  // 读失败且手上没有任何记录：不渲染“还没有记录”一类空态，免得把故障说成空档案
+  const noData = loadFailed && meals.length === 0;
 
   const height = Number(profile.height);
   const weight = Number(profile.weight);
@@ -154,7 +142,12 @@ export default function ProfilePage({
       return;
     }
     try {
-      await addGlucose(meal.meal_id, value, glucoseMinutes);
+      // 后端默认把录入时刻当测量时刻，24 小时视图要的是「就餐时间 + 餐后时长」
+      const base = Date.parse(meal.eaten_at);
+      const measuredAt = Number.isNaN(base)
+        ? undefined
+        : new Date(base + glucoseMinutes * 60_000).toISOString();
+      await addGlucose(meal.meal_id, value, glucoseMinutes, measuredAt);
       setGlucoseFor(null);
       setGlucoseValue("");
       await refresh();
@@ -182,17 +175,47 @@ export default function ProfilePage({
     }
   };
 
+  const editInitial = useMemo<Partial<MealDraft> | null>(
+    () =>
+      editing
+        ? {
+            eaten_at: editing.eaten_at,
+            meal_type: editing.meal_type,
+            foods: editing.foods,
+            note: editing.note,
+            insulin_note: editing.insulin_note,
+            source: editing.source,
+            image_id: editing.image_id,
+          }
+        : null,
+    [editing],
+  );
+
+  const closeDialog = () => {
+    setLogOpen(false);
+    setEditing(null);
+  };
+
   const dialog = (
-    <MealLogDialog
-      open={logOpen}
-      title="手动记一顿"
-      dismissLabel="取消"
-      onClose={() => setLogOpen(false)}
-      onSaved={(meal) => {
-        setSaved(`${formatEatenAt(meal.eaten_at)} ${meal.meal_type} · ${foodsText(meal)}`);
-        void refresh();
-      }}
-    />
+    <>
+      <MealLogDialog
+        open={logOpen || editing !== null}
+        mealId={editing?.meal_id ?? null}
+        initial={editInitial}
+        title={editing ? "编辑这顿记录" : "手动记一顿"}
+        dismissLabel="取消"
+        onClose={closeDialog}
+        onSaved={(meal) => {
+          setSaved(`${formatEatenAt(meal.eaten_at)} ${meal.meal_type} · ${foodsText(meal)}`);
+          void refresh();
+        }}
+      />
+      <AuthDialog
+        open={authMode !== null}
+        initialMode={authMode ?? "login"}
+        onClose={() => setAuthMode(null)}
+      />
+    </>
   );
 
   return (
@@ -337,12 +360,32 @@ export default function ProfilePage({
         )}
 
         {error ? <Banner status="error" title="操作失败" description={error} /> : null}
-        {saved ? <Banner status="success" title="已记入健康档案" description={saved} /> : null}
-        {transportKind !== "live" ? (
-          <Banner status="warning" title="后端未连接" description="连接后端后才能查看和新增餐食记录；当前为 Mock 模式。" />
+        {saved ? <Banner status="success" title="已保存到健康档案" description={saved} /> : null}
+        {transportKind === "offline" ? (
+          <Banner status="warning" title="后端未连接" description="连接后端后才能查看和新增餐食记录；启动后端后点「重新连接」。" />
+        ) : null}
+        {transportKind === "unauthorized" ? (
+          <Banner
+            status="warning"
+            title="登录已过期"
+            description="重新登录后才能查看和新增这个账号的餐食记录。"
+            endContent={<Button label="重新登录" variant="secondary" size="sm" onClick={() => setAuthMode("login")} />}
+          />
+        ) : null}
+        {loadFailed ? (
+          <Banner
+            status="error"
+            title="餐食记录没读到"
+            description={
+              noData
+                ? "后端连接正常但记录接口返回失败，餐食记录与趋势暂时显示不了。"
+                : "后端连接正常但记录接口返回失败，下面显示的不一定是全部记录。"
+            }
+            endContent={<Button label="重试" variant="secondary" size="sm" onClick={() => void refresh()} />}
+          />
         ) : null}
 
-        {embedded || tab === "records" ? (
+        {(embedded || tab === "records") && !noData ? (
           <div className="meal-filters">
             <div className="meal-filter-chips">
               {(["全部", "早餐", "午餐", "晚餐", "加餐"] as const).map((label) => (
@@ -370,7 +413,7 @@ export default function ProfilePage({
 
         {embedded || tab === "records" ? (
           <>
-            {meals.length === 0 ? (
+            {noData ? null : meals.length === 0 ? (
               <div className="profile-empty">
                 <EmptyState
                   title="还没有餐食记录"
@@ -406,7 +449,7 @@ export default function ProfilePage({
                     <div className="meal-record-main">
                       <strong>{foodsText(meal)}</strong>
                       <small>
-                        {meal.carbs_g != null ? `碳水约 ${meal.carbs_g}g` : "碳水未填"}
+                        {carbsText(meal)}
                         {meal.gl != null ? ` · GL 约 ${meal.gl}` : ""}
                         {` · ${{ photo: "拍照记录", chat: "对话记录", manual: "手动记录" }[meal.source]}`}
                         {meal.note ? ` · ${meal.note}` : ""}
@@ -444,8 +487,11 @@ export default function ProfilePage({
                             onChange={(e) => setGlucoseMinutes(Number(e.target.value))}
                           >
                             <option value={0}>餐前</option>
+                            <option value={30}>餐后 30 分钟</option>
                             <option value={60}>餐后 1 小时</option>
+                            <option value={90}>餐后 1.5 小时</option>
                             <option value={120}>餐后 2 小时</option>
+                            <option value={180}>餐后 3 小时</option>
                           </select>
                           <Button label="保存" variant="primary" size="sm" onClick={() => void saveGlucose(meal)} />
                           <Button label="取消" variant="ghost" size="sm" onClick={() => setGlucoseFor(null)} />
@@ -453,6 +499,9 @@ export default function ProfilePage({
                       ) : null}
                     </div>
                     <div className="meal-record-actions">
+                      <button type="button" className="row-action" onClick={() => setEditing(meal)}>
+                        编辑
+                      </button>
                       <button
                         type="button"
                         className="row-action"
@@ -478,32 +527,11 @@ export default function ProfilePage({
         {embedded ? (
           <div className="health-file-section-head" id="health-trend">
             <span>03 / 健康趋势</span>
-            <span className="health-file-section-meta">近 14 天</span>
+            <span className="health-file-section-meta">可选 6 小时 – 全部</span>
           </div>
         ) : null}
 
-        {embedded || tab === "trend" ? (
-          <>
-            <section className="profile-section">
-              <div className="profile-section-head">近 7 天碳水</div>
-              <DailyCarbsChart meals={meals} />
-              <Text size="2xs" color="secondary">
-                按餐食记录里的碳水合计绘制；没填碳水的记录不计入。
-              </Text>
-            </section>
-            <section className="profile-section">
-              <div className="profile-section-head">最近 14 天血糖</div>
-              <GlucoseTrendChart meals={meals} />
-              <Text size="2xs" color="secondary">
-                mmol/L · 只展示你手动记录的值，不做补点或预测；单次读数不能代表长期控制情况。
-              </Text>
-            </section>
-            <section className="profile-section">
-              <div className="profile-section-head">按食物看记录</div>
-              <ByFood meals={meals} />
-            </section>
-          </>
-        ) : null}
+        {(embedded || tab === "trend") && !noData ? <HealthTrends meals={meals} /> : null}
       </div>
 
       {embedded ? createPortal(dialog, document.body) : dialog}

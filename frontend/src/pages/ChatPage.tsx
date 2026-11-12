@@ -4,8 +4,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Banner, Button, Card, Stack, TextArea, Text } from "@astryxdesign/core";
 import { useRuns, type RunState } from "../store/runs";
+import { useAuth } from "../store/auth";
+import { AuthDialog } from "../components/AuthDialog";
 import { DeliverableView } from "../components/DeliverableView";
-import { AgentFeedback, ExecutionCard, EXECUTION_ICON, RunStatus } from "../components/AgentActivity";
+import { AgentFeedback, ExecutionCard, EXECUTION_ICON } from "../components/AgentActivity";
 import { MODALITY_META } from "../components/EvidenceCard";
 import { MealCard } from "../components/MealCard";
 import { MealLogDialog, formatEatenAt, localNow, mealTypeFor } from "../components/MealLogDialog";
@@ -110,6 +112,8 @@ function mealDraftFromItems(items: FoodItem[], imageId?: string | null): Partial
       name: item.name,
       grams: Math.round((item.grams_low + item.grams_high) / 2),
       carbs_g: Math.round(((item.carbs_g_low + item.carbs_g_high) / 2) * 10) / 10,
+      // 区间中值也是估算，不是用户自填的实测碳水
+      estimated: true,
     })),
     note: "",
     source: "photo",
@@ -124,33 +128,26 @@ function RunMessage({
   activeEvidenceId,
   onCiteClick,
   onLogMeal,
-  onViewTrace,
-  traceOpen,
   logged,
   meals,
+  mealsError,
 }: {
   run: RunState;
   activeEvidenceId: string | null;
   onCiteClick: (id: string, run: RunState) => void;
   onLogMeal: (run: RunState) => void;
-  onViewTrace: (run: RunState) => void;
-  traceOpen: boolean;
   logged: boolean;
   meals: MealRecord[];
+  mealsError: boolean;
 }) {
   const { approveRun } = useRuns();
-
-  const viewTrace = () => onViewTrace(run);
 
   const hasMeal = Boolean(run.food);
 
   return (
     <div className="run-message">
       <div className="user-block">
-        <div className="user-question">
-          {run.question}
-          {run.source === "mock" ? <span className="user-mock">（mock）</span> : null}
-        </div>
+        <div className="user-question">{run.question}</div>
         {!hasMeal && EATING_INTENT.test(run.question) ? (
           <div className="user-actions">
             <Button
@@ -163,8 +160,6 @@ function RunMessage({
           </div>
         ) : null}
       </div>
-
-      <RunStatus run={run} onOpen={viewTrace} open={traceOpen} />
 
       <div className="assistant-block">
         <div className="assistant-head">
@@ -234,7 +229,7 @@ function RunMessage({
               />
             ) : null}
 
-            {run.deliverable && !run.deliverable.refused ? (
+            {run.deliverable && !run.deliverable.refused && !mealsError ? (
               <AnswerChart question={run.question} meals={meals} />
             ) : null}
           </Stack>
@@ -337,7 +332,8 @@ function CitationPanel({
 }
 
 export default function ChatPage() {
-  const { runs, startRun, transportKind, activeSessionId } = useRuns();
+  const { runs, startRun, transportKind, activeSessionId, reconnect } = useRuns();
+  const { account } = useAuth();
   const [input, setInput] = useState("");
   const [selected, setSelected] = useState<{ id: string; evidence: Evidence } | null>(null);
   const [traceKey, setTraceKey] = useState<string | null>(null);
@@ -355,13 +351,18 @@ export default function ChatPage() {
   const [loggedRunKeys, setLoggedRunKeys] = useState<string[]>([]);
   const [savedMeal, setSavedMeal] = useState<MealRecord | null>(null);
   const [meals, setMeals] = useState<MealRecord[]>([]);
+  const [mealsError, setMealsError] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [fileOpen, setFileOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const fileTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // 多次选择/移除照片时，旧请求的识别结果不能覆盖新状态
   const uploadSeq = useRef(0);
+  // 手上这份餐食记录属于哪个身份，用于丢弃换账号后迟到的响应
+  const mealIdentity = useRef(account?.user_id ?? "local");
   const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   // 只渲染当前会话的问答；左侧历史点开另一段会话时整列切换
   const threadRuns = useMemo(
@@ -398,17 +399,37 @@ export default function ChatPage() {
   }, [traceKey, latestRun?.key]);
 
   const refreshMeals = useCallback(async () => {
+    const identity = account?.user_id ?? "local";
+    // 换了账号：先清掉上一个人的记录，别让统计图短暂显示别人的数据
+    if (mealIdentity.current !== identity) {
+      mealIdentity.current = identity;
+      setMeals([]);
+      setMealsError(false);
+    }
     if (transportKind !== "live") return;
     try {
-      setMeals(await listMeals(100));
+      const items = await listMeals(100);
+      if (mealIdentity.current !== identity) return;
+      setMeals(items);
+      setMealsError(false);
     } catch {
-      // 图表拿不到数据不影响问答本身
+      if (mealIdentity.current !== identity) return;
+      // 读不到记录时不画统计图，也不谎报“还没有记录”
+      setMealsError(true);
     }
-  }, [transportKind]);
+  }, [transportKind, account?.user_id]);
 
   useEffect(() => {
     void refreshMeals();
   }, [refreshMeals]);
+
+  // 没有拖拽手柄后，输入框要自己随内容长高，超出上限再滚动
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   const handleCiteClick = useCallback((id: string, run: RunState) => {
     const evidence =
@@ -420,17 +441,6 @@ export default function ChatPage() {
     dismissedExecutions.current.add(run.key);
     setSelected((cur) => (cur?.id === id ? null : { id, evidence }));
   }, []);
-
-  const handleViewTrace = useCallback((run: RunState) => {
-    if (executionOpen && (traceKey ?? latestRun?.key) === run.key) {
-      closeExecution();
-      return;
-    }
-    setSelected(null);
-    setFileOpen(false);
-    setTraceKey(run.key);
-    setExecutionOpen(true);
-  }, [closeExecution, executionOpen, traceKey, latestRun?.key]);
 
   const traceRun = threadRuns.find((r) => r.key === traceKey) ?? latestRun ?? null;
 
@@ -504,7 +514,7 @@ export default function ChatPage() {
   );
 
   const send = useCallback(async () => {
-    if (analyzing) return;
+    if (analyzing || transportKind !== "live") return;
     const typed = input.trim();
     const hasFood = Boolean(food && foodItems.length > 0);
     if (!typed && !hasFood) return;
@@ -532,7 +542,7 @@ export default function ChatPage() {
     );
     setInput("");
     clearPhoto();
-  }, [analyzing, clearPhoto, file, food, foodItems, input, startRun]);
+  }, [analyzing, clearPhoto, file, food, foodItems, input, startRun, transportKind]);
 
   useEffect(() => {
     // 可选调用：无头/极老环境无 scrollIntoView 也不崩
@@ -553,7 +563,14 @@ export default function ChatPage() {
                 <h1>欢迎记录您的健康！</h1>
                 <Stack direction="horizontal" gap={2} wrap="wrap">
                   {DEMO_QUESTIONS.map((q) => (
-                    <Button key={q} label={q} variant="secondary" size="sm" onClick={() => startRun(q)} />
+                    <Button
+                      key={q}
+                      label={q}
+                      variant="secondary"
+                      size="sm"
+                      isDisabled={transportKind !== "live"}
+                      onClick={() => startRun(q)}
+                    />
                   ))}
                 </Stack>
               </div>
@@ -565,10 +582,9 @@ export default function ChatPage() {
                   activeEvidenceId={selected?.id ?? null}
                   onCiteClick={handleCiteClick}
                   onLogMeal={openLogForRun}
-                  onViewTrace={handleViewTrace}
-                  traceOpen={executionOpen && traceRun?.key === run.key}
                   logged={loggedRunKeys.includes(run.key)}
                   meals={meals}
+                  mealsError={mealsError}
                 />
               ))
             )}
@@ -623,7 +639,6 @@ export default function ChatPage() {
               }}
             />
             <div className="composer-tool">
-              <VoiceInputButton value={input} onChange={setInput} onError={setVoiceError} />
               <Button
                 label={file ? "更换餐盘" : "上传餐盘"}
                 variant="ghost"
@@ -644,6 +659,7 @@ export default function ChatPage() {
             </div>
             <div className="composer-input">
               <TextArea
+                ref={inputRef}
                 label="问题"
                 isLabelHidden
                 placeholder="输入问题，或补充烹饪方式、血糖…"
@@ -659,6 +675,7 @@ export default function ChatPage() {
               />
             </div>
             <div className="composer-action">
+              <VoiceInputButton value={input} onChange={setInput} onError={setVoiceError} />
               <Button
                 label="发送"
                 variant="primary"
@@ -666,7 +683,9 @@ export default function ChatPage() {
                 icon={SEND_ICON}
                 isIconOnly
                 tooltip="发送"
-                isDisabled={analyzing || (!input.trim() && !(food && foodItems.length > 0))}
+                isDisabled={
+                  analyzing || transportKind !== "live" || (!input.trim() && !(food && foodItems.length > 0))
+                }
                 onClick={() => void send()}
               />
             </div>
@@ -680,7 +699,28 @@ export default function ChatPage() {
           {savedMeal
             ? ` · 已记入健康档案：${formatEatenAt(savedMeal.eaten_at)} ${savedMeal.meal_type}`
             : ""}
-          {transportKind === "mock" ? " · 当前为 Mock 模式（后端不可达或 VITE_MOCK=1）" : ""}
+          {transportKind === "offline" || transportKind === "unauthorized" ? (
+            <Stack direction="horizontal" gap={2} align="center">
+              <Text size="2xs" color="secondary">
+                {transportKind === "offline"
+                  ? "后端未连接，暂时无法提问"
+                  : "登录已过期，重新登录后继续提问"}
+              </Text>
+              {transportKind === "offline" ? (
+                <Button label="重新连接" variant="ghost" size="sm" onClick={() => void reconnect()} />
+              ) : (
+                <Button label="重新登录" variant="ghost" size="sm" onClick={() => setAuthOpen(true)} />
+              )}
+            </Stack>
+          ) : null}
+          {mealsError && transportKind === "live" ? (
+            <Stack direction="horizontal" gap={2} align="center">
+              <Text size="2xs" color="secondary">
+                餐食记录没读到，回答下方的统计图暂不可用
+              </Text>
+              <Button label="重试" variant="ghost" size="sm" onClick={() => void refreshMeals()} />
+            </Stack>
+          ) : null}
         </div>
       </div>
       </div>
@@ -744,6 +784,7 @@ export default function ChatPage() {
           }
         }}
       />
+      <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
   );
 }

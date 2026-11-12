@@ -1,7 +1,7 @@
 /** 餐食记录弹窗：拍照识别、对话意图和健康档案手动录入共用一套字段。 */
 import { useEffect, useState } from "react";
 import { Banner, Button, Card, Stack, Text } from "@astryxdesign/core";
-import { createMeal } from "../api/client";
+import { createMeal, updateMeal } from "../api/client";
 import type { MealDraft, MealFood, MealRecord, MealType } from "../types";
 
 const MEAL_TYPES: MealType[] = ["早餐", "午餐", "晚餐", "加餐"];
@@ -28,6 +28,8 @@ export function formatEatenAt(value: string): string {
 export interface MealLogDialogProps {
   open: boolean;
   initial?: Partial<MealDraft> | null;
+  /** 传了就是改这条已有记录，走 PATCH；不传是新增 */
+  mealId?: string | null;
   title?: string;
   dismissLabel?: string;
   onClose: () => void;
@@ -37,6 +39,7 @@ export interface MealLogDialogProps {
 export function MealLogDialog({
   open,
   initial,
+  mealId = null,
   title = "记这一顿吗？",
   dismissLabel = "只是问问",
   onClose,
@@ -63,7 +66,20 @@ export function MealLogDialog({
   if (!open) return null;
 
   const patchFood = (index: number, patch: Partial<MealFood>) => {
-    setFoods((prev) => prev.map((food, i) => (i === index ? { ...food, ...patch } : food)));
+    setFoods((prev) =>
+      prev.map((food, i) => {
+        if (i !== index) return food;
+        const next = { ...food, ...patch };
+        // 名字或克数一改，原来折算的碳水就不成立了：留空让后端按新克数重算
+        if (food.estimated && (patch.name !== undefined || patch.grams !== undefined)) {
+          next.carbs_g = null;
+          next.gl = null;
+          next.estimated = false;
+        }
+        if (patch.carbs_g !== undefined) next.estimated = false;
+        return next;
+      }),
+    );
   };
 
   const save = async () => {
@@ -82,15 +98,23 @@ export function MealLogDialog({
     setSaving(true);
     setError(null);
     try {
-      const meal = await createMeal({
-        eaten_at: eatenAt,
-        meal_type: mealType,
-        foods: clean,
-        note: note.trim(),
-        source: initial?.source ?? "manual",
-        image_id: initial?.image_id ?? null,
-        insulin_note: insulinNote.trim(),
-      });
+      const meal = mealId
+        ? await updateMeal(mealId, {
+            eaten_at: eatenAt,
+            meal_type: mealType,
+            foods: clean,
+            note: note.trim(),
+            insulin_note: insulinNote.trim(),
+          })
+        : await createMeal({
+            eaten_at: eatenAt,
+            meal_type: mealType,
+            foods: clean,
+            note: note.trim(),
+            source: initial?.source ?? "manual",
+            image_id: initial?.image_id ?? null,
+            insulin_note: insulinNote.trim(),
+          });
       onSaved(meal);
       onClose();
     } catch (err) {
@@ -140,7 +164,7 @@ export function MealLogDialog({
 
           <Stack gap={2}>
             <Text size="2xs" weight="semibold" color="secondary">
-              吃了什么（克数和碳水可估算）
+              吃了什么（碳水留空会按食物库折算）
             </Text>
             {foods.map((food, i) => (
               <div className="meal-food-row" key={i}>
@@ -206,11 +230,11 @@ export function MealLogDialog({
             />
           </details>
 
-          {error ? <Banner status="error" title="记录失败" description={error} /> : null}
+          {error ? <Banner status="error" title={mealId ? "保存失败" : "记录失败"} description={error} /> : null}
 
           <Stack direction="horizontal" gap={2} justify="end">
             <Button label={dismissLabel} variant="secondary" onClick={onClose} />
-            <Button label="记下来" variant="primary" isLoading={saving} isDisabled={saving} onClick={() => void save()} />
+            <Button label={mealId ? "保存修改" : "记下来"} variant="primary" isLoading={saving} isDisabled={saving} onClick={() => void save()} />
           </Stack>
         </Stack>
       </Card>

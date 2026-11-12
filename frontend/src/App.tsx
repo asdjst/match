@@ -1,5 +1,6 @@
 import { Button, Stack, Switch } from "@astryxdesign/core";
 import { useUi } from "./store/ui";
+import { AccountEntry } from "./components/AccountEntry";
 import { ConversationList } from "./components/ConversationList";
 import ChatPage from "./pages/ChatPage";
 
@@ -31,16 +32,15 @@ export default function App() {
         <ConversationList />
 
         <div className="side-foot">
-          <Stack gap={2}>
-            <Stack direction="horizontal" gap={2} vAlign="center">
-              <span className="side-foot-label">深色模式</span>
-              <Switch
-                label="深色模式"
-                isLabelHidden
-                value={mode === "dark"}
-                onChange={(checked) => setMode(checked ? "dark" : "light")}
-              />
-            </Stack>
+          <AccountEntry />
+          <Stack direction="horizontal" gap={2} vAlign="center">
+            <span className="side-foot-label">深色模式</span>
+            <Switch
+              label="深色模式"
+              isLabelHidden
+              value={mode === "dark"}
+              onChange={(checked) => setMode(checked ? "dark" : "light")}
+            />
           </Stack>
         </div>
       </aside>
