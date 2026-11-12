@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from adapters.tools.fake import FakeTools
 from adapters.tools.mcp_client import MCPToolGateway
 
 
@@ -25,6 +26,49 @@ def test_list_tools_exposes_expected(gateway):
     assert "growth_rate" in tools  # 契约必备
     assert {"yoy_diff", "sum", "avg"} <= set(tools)
     assert {"query_food_nutrition", "calculate_gl"} <= set(tools)
+    assert {"glucose_summary", "meal_gl_total", "carb_target"} <= set(tools)
+
+
+def test_tool_set_matches_offline_gateway(gateway):
+    from adapters.tools.fake import FakeTools
+
+    assert set(gateway.list_tools()) == set(FakeTools().list_tools())
+
+
+def test_health_tools_round_trip_and_match_offline(gateway, tmp_path):
+    """真起子进程算一遍，与治理后的离线网关逐字比对：两条路径不许给出两个数字。"""
+    from adapters.tools.fake import FakeTools
+    from adapters.tools.governance import GovernedGateway
+
+    cases = [
+        ("glucose_summary", {"values": [5.6, 10.2, 7.8, 3.5, 14.2]}),
+        ("glucose_summary", {"values": [8.0, 9.0], "low": 3.9, "high": 7.8}),
+        ("glucose_summary", {"values": [6.1]}),
+        ("meal_gl_total", {"foods": [{"name": "米饭", "carbs_g": 38.9}, {"name": "莲藕", "carbs_g": 12}]}),
+        ("carb_target", {"height_cm": 170, "activity": "轻度活动", "weight_kg": 72, "goal": "减重"}),
+        ("carb_target", {}),
+        ("glucose_summary", {"values": []}),
+        ("meal_gl_total", {"foods": [{"name": "外星食物", "carbs_g": 1}]}),
+    ]
+    with GovernedGateway(FakeTools(), audit_path=tmp_path / "offline.jsonl") as offline:
+        for name, args in cases:
+            assert gateway.call(name, args) == offline.call(name, args), f"{name} {args}"
+
+
+def test_health_tool_audit_written(gateway):
+    out = gateway.call("meal_gl_total", {"foods": [{"name": "米饭", "carbs_g": 50}]})
+    assert out["ok"] is True and out["result"]["total_gl"] == 41.5
+    records = [
+        json.loads(line)
+        for line in gateway.audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    rec = next(
+        r for r in records
+        if r["tool"] == "meal_gl_total" and r["args"] == {"foods": [{"name": "米饭", "carbs_g": 50}]}
+    )
+    assert rec["ok"] is True and rec["timed_out"] is False
+    assert "41.5" in rec["summary"]
 
 
 def test_food_tools_contract(gateway):
@@ -36,6 +80,19 @@ def test_food_tools_contract(gateway):
     gl = gateway.call("calculate_gl", {"name": "米饭", "carbs_g": 50})
     assert gl["ok"] is True
     assert gl["result"] == 41.5
+
+
+def test_gi_unknown_food_gives_carbs_but_no_gl(gateway):
+    nutrition = gateway.call("query_food_nutrition", {"name": "莲藕"})
+    assert nutrition["ok"] is True
+    assert nutrition["result"]["carbs_per_100g"] == 16.4
+    assert nutrition["result"]["gi"] is None
+    assert "id 516" in nutrition["source"]
+
+    gl = gateway.call("calculate_gl", {"name": "莲藕", "carbs_g": 12})
+    assert gl["ok"] is False and "GI 未收录" in gl["error"]
+    # 离线 FakeTools 必须给同样的结论，不能一边算得出、一边算不出
+    assert FakeTools().call("calculate_gl", {"name": "莲藕", "carbs_g": 12}) == gl
 
 
 def test_string_param_rejected(gateway):

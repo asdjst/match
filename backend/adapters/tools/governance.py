@@ -27,8 +27,8 @@ DEFAULT_TIMEOUT_S = 10.0
 # 超时兜底返回值（约定契约，勿原地修改）
 TIMEOUT_RESULT: dict = {"ok": False, "error": "timeout"}
 
-# 已知工具的数值参数规格（mcp_server.py schema 的镜像）：
-# number 必填 / number? 可选 / number[] 非空数值列表
+# 已知工具的参数规格（mcp_server.py schema 的镜像）：
+# number 必填 / number? 可选 / number[] 非空数值列表 / dict[] 非空对象列表 / string? 可选字符串
 NUMERIC_TOOL_SCHEMAS: dict[str, dict[str, str]] = {
     "growth_rate": {"a": "number", "b": "number"},
     "yoy_diff": {"a": "number", "b": "number"},
@@ -37,6 +37,14 @@ NUMERIC_TOOL_SCHEMAS: dict[str, dict[str, str]] = {
     "avg": {"values": "number[]"},
     "query_food_nutrition": {"name": "string"},
     "calculate_gl": {"name": "string", "carbs_g": "number"},
+    "glucose_summary": {"values": "number[]", "low": "number?", "high": "number?"},
+    "meal_gl_total": {"foods": "dict[]"},
+    "carb_target": {
+        "height_cm": "number?",
+        "activity": "string?",
+        "weight_kg": "number?",
+        "goal": "string?",
+    },
 }
 
 
@@ -55,7 +63,7 @@ def _is_number(v: Any) -> bool:
 
 
 def validate_args(name: str, args: Any) -> str | None:
-    """基础校验：args 必须为可 JSON 序列化 dict，已知工具数值参数逐个检查。
+    """基础校验：args 必须为可 JSON 序列化 dict，已知工具参数逐个检查。
 
     通过返回 None；不通过返回错误文案（文案含参数名）。
     """
@@ -65,17 +73,24 @@ def validate_args(name: str, args: Any) -> str | None:
         json.dumps(args, ensure_ascii=False)
     except (TypeError, ValueError):
         return "参数含不可 JSON 序列化的值"
-    for key, kind in NUMERIC_TOOL_SCHEMAS.get(name, {}).items():
-        if key not in args:
-            if kind.endswith("?"):
+    for key, spec in NUMERIC_TOOL_SCHEMAS.get(name, {}).items():
+        optional = spec.endswith("?")
+        kind = spec[:-1] if optional else spec
+        if key not in args or args[key] is None:
+            if optional:
                 continue
-            return f"缺少数值参数：{key}"
+            return f"缺少参数：{key}"
         val = args[key]
         if kind == "number[]":
             if not isinstance(val, list) or not val:
                 return f"参数 {key} 必须为非空数值列表"
             if not all(_is_number(x) for x in val):
                 return f"参数 {key} 必须全为数值"
+        elif kind == "dict[]":
+            if not isinstance(val, list) or not val:
+                return f"参数 {key} 必须为非空对象列表"
+            if not all(isinstance(x, dict) for x in val):
+                return f"参数 {key} 必须全为对象"
         elif kind == "string":
             if not isinstance(val, str) or not val.strip():
                 return f"参数 {key} 必须为非空字符串"
