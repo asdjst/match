@@ -25,18 +25,19 @@ check() { # $1 场景名  $2 期望
 }
 
 echo "—— 启动演练 API（live 模式，:8900）——"
-(cd backend && MRAG_MODE=live MRAG_FAST_API_KEY="$MRAG_FAST_API_KEY" MRAG_STRONG_API_KEY="$MRAG_STRONG_API_KEY" .venv/bin/python -m uvicorn app.main:app --port 8900 >/tmp/drill_api.log 2>&1) &
+# 网关 key 由 backend/.env 提供，不在这里显式透传：set -u 下未导出的变量会直接中断脚本
+(cd backend && MRAG_MODE=live .venv/bin/python -m uvicorn app.main:app --port 8900 >/tmp/drill_api.log 2>&1) &
 DRILL_PID=$!
 sleep 4
 
 echo "—— 场景 C：正常回归（计算题）——"
-out=$(ask "2024年营收相比2023年同比增长了多少？")
+out=$(ask "我每天该吃多少碳水？三餐怎么分？")
 echo "$out" | grep -q '"degraded": false' && echo "  PASS：正常出带引用交付物" || { echo "  FAIL：$out"; fail=1; }
 
 echo "—— 场景 A：掐断 R2R（检索故障）——"
 docker compose -f deploy/docker-compose.yml stop r2r >/dev/null 2>&1
 sleep 2
-out=$(ask "公司2024年营业收入是多少？")
+out=$(ask "一碗米饭大概多少碳水？")
 echo "$out" | grep -q '"degraded": true' && echo "  PASS：10s 内降级兜底" || { echo "  FAIL：$out"; fail=1; }
 docker compose -f deploy/docker-compose.yml start r2r >/dev/null 2>&1
 sleep 3
@@ -46,7 +47,7 @@ echo "—— 场景 B：模型网关故障（错 key 子进程）——"
 BAD_PID=$!
 sleep 4
 out=$(curl -sN --noproxy '*' --max-time 60 -X POST http://localhost:8901/api/chat -H 'Content-Type: application/json' \
-  -d '{"session_id":"drill","question":"公司2024年营业收入是多少？"}' \
+  -d '{"session_id":"drill","question":"一碗米饭大概多少碳水？"}' \
   | grep --line-buffered '^data: ' | while read -r line; do
     case "$line" in *'"deliverable"'*) echo "${line#data: }"; break ;; esac
   done)

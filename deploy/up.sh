@@ -15,7 +15,7 @@ else
     if curl -sf --noproxy '*' http://localhost:7272/v3/health >/dev/null 2>&1; then break; fi
     sleep 2
   done
-  echo "建库（演示物料三模态）…"
+  echo "建库（控糖知识卡）…"
   (cd backend && MRAG_MODE=live .venv/bin/python scripts/seed_r2r.py)
 fi
 
