@@ -26,6 +26,7 @@ from app.api.meals import router as meals_router
 from app.api.tasks import router as tasks_router
 from core.graph.builder import build_graph
 from core.services.accounts import AccountStore, LoginThrottle
+from core.services.answer_cache import AnswerCache
 from core.services.memory import SessionMemory
 from core.services.store import MealStore, RunStore
 from infra.config import Settings, get_settings
@@ -97,6 +98,9 @@ async def lifespan(app: FastAPI):
             app.state.store.close()
             app.state.meals.close()
             app.state.accounts.close()
+            cache = getattr(app.state, "answer_cache", None)
+            if cache is not None:
+                cache.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -143,10 +147,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.runs = {}
     db_path = settings.db_path or Path(__file__).resolve().parent.parent / "data" / "runs.db"
     app.state.store = RunStore(db_path)
+    # 保留期 >0 时，启动清理一次过期 run（payload 含证据池，长期运行会膨胀）；默认 0 不清理
+    if settings.runs_retention_days > 0:
+        app.state.store.cleanup(settings.runs_retention_days)
     app.state.meals = MealStore(db_path)
     app.state.accounts = AccountStore(db_path)
     app.state.login_throttle = LoginThrottle()
     app.state.memory = SessionMemory()
+    app.state.answer_cache = AnswerCache(
+        db_path,
+        embed_url=settings.embeddings_url,
+        embed_model=settings.embeddings_model,
+        embed_timeout_s=settings.embeddings_timeout_s,
+        sim_threshold=settings.answer_cache_sim,
+        ttl_s=settings.answer_cache_ttl_s,
+        enabled=settings.answer_cache,
+    )
     app.include_router(auth_router)
     app.include_router(chat_router)
     app.include_router(food_router)

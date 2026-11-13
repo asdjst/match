@@ -207,3 +207,71 @@ def test_legacy_db_without_user_id_column_migrates_to_local(tmp_path):
     assert store.get_run("old", with_session=True)["session_id"] == "s1"
     assert [r["run_id"] for r in store.list_runs()] == ["old"]
     store.close()
+
+
+def test_history_reads_hot_columns_without_payload_parse(tmp_path):
+    from core.services.store import RunStore
+
+    store = RunStore(tmp_path / "runs.db")
+    store.save_run("r1", {"question": "米饭多少碳水？", "deliverable": {"answer": "约26g[E1]"}}, "s1", user_id="u1")
+    store.save_run("r2", {"question": "那燕麦呢？", "deliverable": {"answer": "燕麦GI更低[E2]", "confidence": 0.9}}, "s1", user_id="u1")
+    items = store.history("s1", last=2, user_id="u1")
+    assert [i["question"] for i in items] == ["米饭多少碳水？", "那燕麦呢？"]
+    # answer_snippet 会去掉 [E#] 编号（回填给规划器不需要引用号）
+    assert items[1]["answer"] == "燕麦GI更低"
+    assert items[1]["confidence"] == 0.9
+    # 热读列确实落库，且不用依赖 payload
+    row = store._conn.execute("SELECT answer_snippet, food_names FROM runs WHERE run_id='r1'").fetchone()
+    assert row["answer_snippet"] == "约26g"  # 引用编号会被去掉
+    store.close()
+
+
+def test_recent_food_names_hot_column(tmp_path):
+    import json as _json
+
+    from core.services.store import RunStore
+
+    store = RunStore(tmp_path / "runs.db")
+    store.save_run("r1", {"question": "这餐怎么样", "food_items": [{"name": "米饭"}, {"name": "青菜"}]}, "s1", user_id="u1")
+    assert store.recent_food_names("s1", user_id="u1") == ["米饭", "青菜"]
+    row = store._conn.execute("SELECT food_names FROM runs WHERE run_id='r1'").fetchone()
+    assert _json.loads(row["food_names"]) == ["米饭", "青菜"]
+    store.close()
+
+
+def test_cleanup_retention_deletes_only_old_runs(tmp_path):
+    from core.services.store import RunStore
+
+    store = RunStore(tmp_path / "runs.db")
+    store.save_run("old", {"question": "q", "deliverable": {"answer": "a"}}, "s", user_id="u1")
+    old_ts = "2020-01-01T00:00:00+00:00"
+    with store._lock:
+        store._conn.execute("UPDATE runs SET created_at=? WHERE run_id='old'", (old_ts,))
+        store._conn.commit()
+    store.save_run("new", {"question": "q2", "deliverable": {"answer": "b"}}, "s", user_id="u1")
+    assert store.cleanup(30) == 1
+    assert store.get_run("old", user_id="u1") is None
+    assert store.get_run("new", user_id="u1") is not None
+    assert store.cleanup(0) == 0  # 0 = 不清理
+    store.close()
+
+
+def test_migrate_adds_hot_columns_to_legacy_db(tmp_path):
+    import sqlite3 as _sq
+
+    from core.services.store import RunStore
+
+    # 造一份只有旧列的库
+    legacy = _sq.connect(str(tmp_path / "legacy.db"))
+    legacy.execute(
+        "CREATE TABLE runs (run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL DEFAULT '', "
+        "question TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'running', "
+        "confidence REAL, refused INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL, payload TEXT NOT NULL)"
+    )
+    legacy.commit()
+    legacy.close()
+    store = RunStore(tmp_path / "legacy.db")
+    cols = {r["name"] for r in store._conn.execute("PRAGMA table_info(runs)")}
+    assert {"user_id", "answer_snippet", "food_names"} <= cols
+    store.close()

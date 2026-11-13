@@ -21,8 +21,16 @@ PROFILE = {"height_cm": 170, "activity": "轻度活动"}
 
 @pytest.fixture()
 def client(tmp_path):
-    # 独立临时库，避免测试运行写进演示用的 data/runs.db
-    return TestClient(create_app(Settings(mode="fake", db_path=str(tmp_path / "runs.db"))))
+    # 独立临时库，避免测试运行写进演示用的 data/runs.db；关闭回答缓存，保持既有用例的事件序列稳定
+    return TestClient(create_app(Settings(mode="fake", db_path=str(tmp_path / "runs.db"), answer_cache=False)))
+
+
+@pytest.fixture()
+def cache_client(tmp_path):
+    # 开语义缓存 + 关闭 embeddings（走确定性的文本相似度回退路径）
+    return TestClient(create_app(Settings(
+        mode="fake", db_path=str(tmp_path / "runs.db"), answer_cache=True, embeddings_url="",
+    )))
 
 
 def _chat(client, question, **extra):
@@ -47,14 +55,26 @@ def _deliverable(events):
 def test_chat_sse_event_order_and_deliverable(client, question):
     events = _chat(client, question, **({"profile": PROFILE} if question == TOOL_Q else {}))
     types = [e["type"] for e in events]
-    # 事件序列合法：run → node* → deliverable → done（无 guard 事件）
-    assert types[0] == "run"
-    assert types[-1] == "done"
-    assert "guard" not in types
-    assert "error" not in types
-    nodes = [t for t in types if t == "node"]
+    # 事件序列合法：run → (node|answer_stream)* → deliverable → done（无 guard 事件）
+    # answer_stream 是成文流式 delta，允许出现在节点事件之间、deliverable 之前
+    core = [t for t in types if t not in ("answer_stream", "answer_abort")]
+    assert core[0] == "run"
+    assert core[-1] == "done"
+    assert "guard" not in core
+    assert "error" not in core
+    nodes = [t for t in core if t == "node"]
     assert nodes, "至少经历一个节点"
-    assert types == ["run"] + ["node"] * len(nodes) + ["deliverable", "done"]
+    assert core == ["run"] + ["node"] * len(nodes) + ["deliverable", "done"]
+    # 流式 delta 全部在 deliverable 之前，且拼起来就是最终成文（fake 模式确定性一致）
+    streamed = "".join(e["delta"] for e in events if e["type"] == "answer_stream")
+    deliverable_seen = False
+    for e in events:
+        if e["type"] == "deliverable":
+            deliverable_seen = True
+        elif e["type"] in ("answer_stream", "answer_abort"):
+            assert not deliverable_seen
+    if streamed:
+        assert _deliverable(events)["answer"] == streamed
     assert events[0]["run_id"]
     node_events = [e for e in events if e["type"] == "node"]
     for start, end in zip(node_events[::2], node_events[1::2], strict=True):
@@ -388,3 +408,50 @@ def test_cors_only_allows_configured_origin(client):
 
     blocked = client.get("/api/health", headers={"Origin": "https://evil.example"})
     assert "access-control-allow-origin" not in blocked.headers
+
+
+def test_answer_stream_then_cache_hit_on_repeat(cache_client):
+    first = _chat(cache_client, FACTUAL_Q)
+    d1 = _deliverable(first)
+    streamed = "".join(e["delta"] for e in first if e["type"] == "answer_stream")
+    assert streamed, "成文应产生 answer_stream 事件"
+    assert d1["answer"] == streamed
+    assert not d1.get("from_cache")
+
+    second = _chat(cache_client, FACTUAL_Q)
+    d2 = _deliverable(second)
+    # 同题同用户同上下文 → 语义缓存命中：无成文流、无图节点，只有 cache 节点
+    assert d2.get("from_cache") is True
+    assert d2["answer"] == d1["answer"]
+    assert not any(e["type"] == "answer_stream" for e in second)
+    node_names = [e["node"] for e in second if e["type"] == "node"]
+    assert node_names == ["cache"]
+
+
+def test_cache_miss_on_different_question(cache_client):
+    _chat(cache_client, FACTUAL_Q)
+    events = _chat(cache_client, COMPARE_Q)
+    d = _deliverable(events)
+    assert not d.get("from_cache")
+    assert any(e["type"] == "node" and e["node"] != "cache" for e in events)
+
+
+def test_cache_invalidated_when_meals_change(cache_client):
+    _chat(cache_client, FACTUAL_Q)
+    # 新增一条餐食记录 → 上下文指纹变化 → 缓存失效，重新走完整图
+    cache_client.post("/api/meals", json={
+        "eaten_at": "2026-01-01T12:00:00", "meal_type": "午餐",
+        "foods": [{"name": "米饭", "grams": 150}],
+    })
+    events = _chat(cache_client, FACTUAL_Q)
+    d = _deliverable(events)
+    assert not d.get("from_cache")
+    assert any(e["type"] == "node" and e["node"] == "writer" for e in events)
+
+
+def test_refused_answer_not_cached(cache_client):
+    _chat(cache_client, OUT_OF_CORPUS_Q)
+    events = _chat(cache_client, OUT_OF_CORPUS_Q)
+    d = _deliverable(events)
+    assert d["refused"] is True
+    assert not d.get("from_cache")

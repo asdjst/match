@@ -12,7 +12,7 @@ from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 
 from app.api.deps import current_user
-from core.graph.events import NodeEventLog
+from core.graph.events import NodeEventLog, epoch_ms
 from core.graph.state import GraphState
 from core.schemas.deliverable import Deliverable
 from core.schemas.profile import ProfileIn
@@ -117,6 +117,44 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
         except Exception as exc:
             state.tracer.event(trace_id, "memory_error", {"error": str(exc)[:200]})
         profile = req.profile.normalized() if req.profile else None
+        # 语义回答缓存：同一用户 + 上下文指纹未变 + 问题相似 → 直接回放上次交付物
+        cache = getattr(state, "answer_cache", None)
+        cache_fp = None
+        cached = None
+        if cache is not None:
+            try:
+                cache_fp = cache.fingerprint(profile, req.image_id, food_items, state.meals.fingerprint(user))
+                cached = cache.lookup(user, cache_fp, question)
+            except Exception as exc:
+                state.tracer.event(trace_id, "cache_error", {"error": str(exc)[:160]})
+        if cached is not None:
+            deliverable = dict(cached)
+            deliverable["from_cache"] = True
+            node_ev = {
+                "type": "node", "node": "cache", "status": "done", "round_no": 0,
+                "at": epoch_ms(), "elapsed_ms": 0,
+                "summary": "命中语义缓存：问题与个人上下文均未变化，直接回放上次交付物。",
+            }
+            record = events.snapshot({
+                "session_id": req.session_id, "user_id": user, "question": question,
+                "round_no": 0, "node_results": {}, "deliverable": deliverable, "created_at": created_at,
+            })
+            record["node_events"] = [node_ev]
+            record["timings"] = [{"node": "cache", "ms": 0, "round_no": 0, "at": node_ev["at"]}]
+            state.runs[run_id] = record
+            persist(record)
+            state.memory.append(memory_key, {
+                "question": question,
+                "answer": answer_snippet(deliverable),
+                "confidence": deliverable.get("confidence"),
+                "run_id": run_id,
+            })
+            state.tracer.event(trace_id, "cache_hit", {"question": question[:80]})
+            state.tracer.end(trace_id, {"from_cache": True, "confidence": deliverable.get("confidence")})
+            yield _sse(node_ev)
+            yield _sse({"type": "deliverable", "deliverable": deliverable})
+            yield _sse({"type": "done"})
+            return
         # 多轮上下文：优先进程内记忆，重启后由 SQLite 里的历史 run 回填
         history = state.memory.history(memory_key, last=3)
         if not history:
@@ -154,6 +192,13 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
         try:
             async for mode, chunk in state.graph.astream(init, config, stream_mode=["custom", "updates"]):
                 if mode == "custom":
+                    # 成文流式 delta / 校验不过的回滚信号，原样转发给前端
+                    if chunk.get("type") == "answer_token":
+                        yield _sse({"type": "answer_stream", "delta": chunk["delta"]})
+                        continue
+                    if chunk.get("type") == "answer_abort":
+                        yield _sse({"type": "answer_abort"})
+                        continue
                     event = events.custom(chunk)
                     if event is not None:
                         state.runs[run_id] = events.snapshot(merged)
@@ -202,6 +247,12 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
         state.runs[run_id] = merged
         persist(merged)
         remember(merged)
+        # 只缓存未拒答的正常交付物：拒答/降级不进缓存，避免把一次性状态固化
+        if cache is not None and cache_fp and merged.get("deliverable") and not merged["deliverable"].get("refused"):
+            try:
+                cache.store(user, cache_fp, question, merged["deliverable"])
+            except Exception as exc:
+                state.tracer.event(trace_id, "cache_error", {"error": str(exc)[:160]})
         d = merged.get("deliverable") or {}
         state.tracer.end(trace_id, {"refused": d.get("refused", False), "confidence": d.get("confidence")})
         yield _sse({"type": "done"})

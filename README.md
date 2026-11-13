@@ -98,8 +98,14 @@ fake 的检索语料直接读 `demo_assets/gluco_knowledge` 的同一批知识�
 | `MRAG_WEB_SEARCH_PROXY` | 可选 | 出网代理，如 `http://127.0.0.1:7890` |
 | `MRAG_CORS_ORIGINS` | 可选 | 逗号分隔，默认本地 5173 |
 | `MRAG_UPLOAD_DIR` / `MRAG_DB_PATH` | 可选 | 餐图、运行快照与账号库目录，默认 `backend/data/`（账号与会话同在 `runs.db`） |
+| `MRAG_RUNS_RETENTION_DAYS` | 可选 | run 历史保留天数，>0 时启动时清理过期 run 并 ANALYZE；默认 0 不清理 |
 | `MRAG_TOOL_AUDIT_PATH` | 可选 | MCP 调用审计 JSONL，默认 `backend/logs/tool_audit.jsonl` |
 | `MRAG_TOOL_TIMEOUT_S` | 可选 | 单次工具调用超时，默认 10s，超时返回 `ok:false` 不炸图 |
+| `MRAG_ANSWER_CACHE` | 可选 | 语义回答缓存开关，默认开：同一用户、上下文指纹未变、问题相似（余弦 ≥ 阈值）时直接回放上次交付物，SSE 里带 `from_cache` 标记和 `cache` 节点事件 |
+| `MRAG_ANSWER_CACHE_SIM` / `_TTL_S` | 可选 | 命中阈值默认 0.93、有效期默认 7 天 |
+| `MRAG_EMBEDDINGS_URL` / `_MODEL` / `_TIMEOUT_S` | 可选 | 本地 embeddings 服务（infinity :7997，bge-small-zh-v1.5），缓存相似度与未来的语义召回用；不可达自动退化为文本相似度 |
+
+另外，成文回答在 SSE 里以 `answer_stream` 事件逐 token 推送（前端光标跟随），校验通过后由 `deliverable` 事件整体确认；校验不过发 `answer_abort`，前端丢弃草稿改按逐条断言呈现。
 | `MRAG_GDRIVE_*` | 可选 | 云端网盘通道，当前未配置即自动关闭 |
 
 百度千帆本身是大模型平台（送 ERNIE 免费调用额度），不提供独立的可引用搜索接口；要换搜索源用博查或 Tavily。

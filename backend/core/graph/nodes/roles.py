@@ -589,11 +589,26 @@ def make_writer(threshold: float, llm=None):
         # 成文放在人工断点之后：放行会重放本节点，避免重复调模型；
         # 拒答与预算耗尽的兜底交付不再多花一次模型调用，直接按断言呈现
         question = (state.get("dag") or {}).get("question") or state["question"]
-        composed = (
-            compose.compose(llm, question, assertions)
-            if llm is not None and not refused and not budget_stop
-            else None
-        )
+        composed = None
+        if llm is not None and not refused and not budget_stop:
+            # 成文改为流式：delta 经 custom 事件实时推给前端；校验不过则发 answer_abort 让前端丢弃草稿
+            from langgraph.config import get_stream_writer
+
+            sent = {"n": 0}
+
+            def _emit(delta: str) -> None:
+                sent["n"] += 1
+                try:
+                    get_stream_writer()({"type": "answer_token", "delta": delta})
+                except Exception:
+                    pass  # 非流式调用（invoke/单测）时 writer 为 no-op
+
+            composed = compose.compose_stream(llm, question, assertions, emit=_emit)
+            if composed.text is None and sent["n"]:
+                try:
+                    get_stream_writer()({"type": "answer_abort"})
+                except Exception:
+                    pass
         deliverable = Deliverable(
             question=state["question"],
             assertions=assertions,

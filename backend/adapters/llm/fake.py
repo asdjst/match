@@ -40,6 +40,13 @@ class FakeLLM:
             return HistoryIntent(personal=personal, reason="假模型：关键词启发式判断个人历史意图")
         return TextOut(text=prompt.task)
 
+    def stream(self, prompt: PromptBundle, tier: str = "fast"):
+        """离线流式：把确定性成文按句子切块吐出，模拟 token 级推送。"""
+        text = _compose(prompt).text or ""
+        for part in re.split(r"(?<=[。！？；])", text):
+            if part:
+                yield part
+
 
 def _plan(task: str) -> TaskDAG:
     question = task.split("QUESTION:", 1)[-1].strip()

@@ -56,6 +56,57 @@ def _problem(text: str, assertions: list[Assertion]) -> str | None:
     return None
 
 
+def _parse_stream_text(raw: str) -> str:
+    """流式原始输出可能被模型包成 JSON：尽力解包，失败就按纯文本处理。"""
+    import json
+
+    text = raw.strip().removeprefix("```").strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and isinstance(parsed.get("text"), str):
+                return parsed["text"]
+        except ValueError:
+            pass
+    return raw
+
+
+def compose_stream(llm, question: str, assertions: list[Assertion], emit=None) -> ComposeResult:
+    """流式成文：边生成边经 emit 回调推送 delta，落盘校验不过再整体回退。
+
+    校验（引用集合/硬数字/长度）必须作用于完整文本，因此流式只影响展示，
+    不通过时交付物仍退回逐条断言，由调用方负责通知前端丢弃草稿。
+    """
+    if not assertions:
+        return ComposeResult(None)
+    prompt = PromptBundle(
+        role="writer",
+        system=COMPOSE_SYSTEM,
+        task=f"问题：{question}\n审校通过的断言（按此顺序成文）：\n{_claims_block(assertions)}",
+        format_hint="直接输出回答正文文本，不要输出 JSON 包装、不要任何解释。",
+    )
+    stream = getattr(llm, "stream", None)
+    try:
+        if callable(stream):
+            chunks: list[str] = []
+            for delta in stream(prompt, tier="fast"):
+                if delta:
+                    chunks.append(delta)
+                    if emit is not None:
+                        emit(delta)
+            raw = "".join(chunks)
+        else:
+            out: ComposedAnswer = llm.complete(prompt, tier="fast", schema=ComposedAnswer)
+            raw = out.text or ""
+    except Exception:
+        return ComposeResult(None, reason="成文模型调用失败，按断言逐条呈现")
+    text = _parse_stream_text(raw).strip()
+    problem = _problem(text, assertions)
+    if problem:
+        return ComposeResult(None, reason=f"{problem}，按断言逐条呈现")
+    return ComposeResult(text, source="llm")
+
+
 def compose(llm, question: str, assertions: list[Assertion]) -> ComposeResult:
     if not assertions:
         return ComposeResult(None)

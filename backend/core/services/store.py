@@ -2,7 +2,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _SCHEMA = """
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS runs (
     payload     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at DESC);
+-- 涉及 user_id 的索引统一在 _migrate 里建：旧库要先 ALTER 补列再建索引
 
 CREATE TABLE IF NOT EXISTS meal_logs (
     meal_id       TEXT PRIMARY KEY,
@@ -59,8 +60,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
     if "user_id" not in cols:
         conn.execute("ALTER TABLE runs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'local'")
-        conn.commit()
+    # 热读列单独落列：history/recent_food_names 不用再 parse 含完整证据池的 payload JSON
+    if "answer_snippet" not in cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN answer_snippet TEXT")
+    if "food_names" not in cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN food_names TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_user_session ON runs(user_id, session_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_user_created ON runs(user_id, created_at DESC)")
     conn.commit()
 
 
@@ -108,15 +114,22 @@ class RunStore:
             "error": state.get("error"),
         }
         now = _now()
+        # 热读列（回答摘要、食物名）单独落列，历史查询不再 parse 大 payload
+        from core.services.memory import answer_snippet
+
+        snippet = answer_snippet(deliverable) if deliverable else None
+        names = [str(i.get("name") or "").strip() for i in (state.get("food_items") or []) if str(i.get("name") or "").strip()]
+        food_names = json.dumps(names, ensure_ascii=False) if names else None
         # 首次写入用 created_at=now，后续 upsert 保留原 created_at
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO runs (run_id, session_id, user_id, question, status, confidence, refused, created_at, updated_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO runs (run_id, session_id, user_id, question, status, confidence, refused, created_at, updated_at, payload, answer_snippet, food_names)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     status=excluded.status, confidence=excluded.confidence,
-                    refused=excluded.refused, updated_at=excluded.updated_at, payload=excluded.payload
+                    refused=excluded.refused, updated_at=excluded.updated_at, payload=excluded.payload,
+                    answer_snippet=excluded.answer_snippet, food_names=excluded.food_names
                 """,
                 (
                     run_id,
@@ -129,6 +142,8 @@ class RunStore:
                     now,
                     now,
                     json.dumps(payload, ensure_ascii=False, default=str),
+                    snippet,
+                    food_names,
                 ),
             )
             self._conn.commit()
@@ -163,18 +178,24 @@ class RunStore:
 
         with self._lock:
             rows = self._conn.execute(
-                """SELECT question, payload FROM runs
+                """SELECT question, answer_snippet, confidence, payload FROM runs
                    WHERE session_id=? AND user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?""",
                 (session_id, user_id, last),
             ).fetchall()
         items: list[dict] = []
         for row in reversed(rows):
-            payload = json.loads(row["payload"])
-            deliverable = payload.get("deliverable") or {}
+            answer = row["answer_snippet"]
+            confidence = row["confidence"]
+            if answer is None:
+                # 旧数据没有热读列：回退到 parse payload
+                payload = json.loads(row["payload"])
+                deliverable = payload.get("deliverable") or {}
+                answer = answer_snippet(deliverable)
+                confidence = deliverable.get("confidence")
             items.append({
-                "question": payload.get("question") or row["question"],
-                "answer": answer_snippet(deliverable),
-                "confidence": deliverable.get("confidence"),
+                "question": row["question"],
+                "answer": answer,
+                "confidence": confidence,
             })
         return items
 
@@ -182,11 +203,14 @@ class RunStore:
         """本会话最近一次拍照识别出的食物名：给“我之前吃过这个吗”这类追问补齐指代。"""
         with self._lock:
             rows = self._conn.execute(
-                """SELECT payload FROM runs
+                """SELECT food_names, payload FROM runs
                    WHERE session_id=? AND user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?""",
                 (session_id, user_id, last),
             ).fetchall()
         for row in rows:
+            if row["food_names"]:
+                return [n for n in json.loads(row["food_names"]) if n]
+            # 旧数据没有热读列：回退到 parse payload
             payload = json.loads(row["payload"])
             names = [
                 str(item.get("name") or "").strip()
@@ -196,6 +220,17 @@ class RunStore:
             if names:
                 return names
         return []
+
+    def cleanup(self, retention_days: int) -> int:
+        """清理超过保留期的旧 run（payload 含证据池，长期运行会膨胀）；返回删除条数。0 表示不清理。"""
+        if retention_days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat(timespec="seconds")
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM runs WHERE created_at < ?", (cutoff,))
+            self._conn.commit()
+            self._conn.execute("ANALYZE")
+            return cur.rowcount
 
     def close(self) -> None:
         with self._lock:
@@ -401,6 +436,19 @@ class MealStore:
             "updated_at": row["updated_at"],
             "readings": [dict(r) for r in readings],
         }
+
+    def fingerprint(self, user_id: str = "local") -> str:
+        """该用户餐食/血糖数据的廉价指纹：条数 + 最大 rowid，任一变化即视为数据已变。"""
+        with self._lock:
+            mc, mr = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM meal_logs WHERE user_id=?", (user_id,)
+            ).fetchone()
+            gc, gr = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(g.rowid),0) FROM glucose_readings g "
+                "JOIN meal_logs m ON g.meal_id=m.meal_id WHERE m.user_id=?",
+                (user_id,),
+            ).fetchone()
+        return f"{mc}:{mr}:{gc}:{gr}"
 
     def close(self) -> None:
         with self._lock:

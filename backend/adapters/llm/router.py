@@ -25,6 +25,34 @@ class LiteLLMRouter:
 
         return complete_structured(call, prompt)
 
+    def stream(self, prompt: PromptBundle, tier: str):
+        """流式输出：逐 chunk 产出文本 delta（用于成文回答的 token 级 SSE 推送）。"""
+        from litellm import completion
+
+        cfg = self._tiers.get(tier) or self._tiers["fast"]
+        user = "\n\n".join(x for x in [prompt.task, prompt.evidence_block, prompt.format_hint] if x)
+        kwargs: dict = {
+            "model": cfg.model,
+            "messages": [{"role": "system", "content": prompt.system}, {"role": "user", "content": user}],
+            "temperature": _TIER_TEMPERATURE.get(prompt.role, 0.3),
+            "max_tokens": _MAX_TOKENS.get(tier, 4096),
+            "num_retries": 3,
+            "timeout": 90,
+            "stream": True,
+        }
+        if cfg.api_base:
+            kwargs["api_base"] = cfg.api_base
+        if cfg.api_key:
+            kwargs["api_key"] = cfg.api_key
+        if cfg.extra_headers:
+            kwargs["extra_headers"] = cfg.extra_headers
+        if cfg.extra_body:
+            kwargs["extra_body"] = cfg.extra_body
+        for chunk in completion(**kwargs):
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                yield delta
+
     def _raw(self, prompt: PromptBundle, tier: str) -> str:
         from litellm import completion
 

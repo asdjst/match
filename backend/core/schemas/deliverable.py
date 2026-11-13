@@ -26,3 +26,4 @@ class Deliverable(BaseModel):
     degraded_reason: str | None = Field(default=None, description="降级原因，如预算耗尽")
     refused: bool = False
     refusal_reason: str | None = None
+    from_cache: bool = Field(default=False, description="语义缓存命中，直接回放上次交付物")

@@ -88,7 +88,14 @@ class Settings:
     gdrive_top_k: int = 3
     # 整轮检索硬上限：本地库通常 <1s，联网失败最多等这么久，不能让用户陪跑
     retrieval_timeout_s: float = 8.0
+    answer_cache: bool = True
+    answer_cache_sim: float = 0.93
+    answer_cache_ttl_s: int = 604800
+    embeddings_url: str = "http://localhost:7997"
+    embeddings_model: str = "BAAI/bge-small-zh-v1.5"
+    embeddings_timeout_s: float = 1.5
     db_path: str = ""
+    runs_retention_days: int = 0
     upload_dir: str = ""
     funasr_url: str = ""
     # 逗号分隔的白名单；默认只放本机开发端口，部署时显式改成前端域名
@@ -135,7 +142,14 @@ class Settings:
             gdrive_proxy=_env("GDRIVE_PROXY"),
             gdrive_top_k=int(_env("GDRIVE_TOP_K", "3")),
             retrieval_timeout_s=float(_env("RETRIEVAL_TIMEOUT_S", "8")),
+            answer_cache=_env("ANSWER_CACHE", "1") not in ("0", "false", "off"),
+            answer_cache_sim=float(_env("ANSWER_CACHE_SIM", "0.93")),
+            answer_cache_ttl_s=int(_env("ANSWER_CACHE_TTL_S", "604800")),
+            embeddings_url=_env("EMBEDDINGS_URL", "http://localhost:7997"),
+            embeddings_model=_env("EMBEDDINGS_MODEL", "BAAI/bge-small-zh-v1.5"),
+            embeddings_timeout_s=float(_env("EMBEDDINGS_TIMEOUT_S", "1.5")),
             db_path=_env("DB_PATH"),
+            runs_retention_days=int(_env("RUNS_RETENTION_DAYS", "0")),
             upload_dir=_env("UPLOAD_DIR"),
             funasr_url=_env("FUNASR_URL"),
             cors_origins=_env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"),
