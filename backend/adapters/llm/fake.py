@@ -1,6 +1,6 @@
 import re
 
-from core.schemas.agent import AnalystOutput, ComposedAnswer, CriticOutput, ReviewVerdict
+from core.schemas.agent import AnalystOutput, ComposedAnswer, CriticOutput, HistoryIntent, ReviewVerdict
 from core.schemas.dag import NodeSpec, TaskDAG
 from core.schemas.deliverable import Assertion
 from core.schemas.prompt import PromptBundle, TextOut
@@ -29,6 +29,15 @@ class FakeLLM:
             uncited = sum(1 for l in claims if "引用：无" in l)
             score = 0.9 if claims and uncited == 0 else (0.5 if claims else 0.0)
             return LLMConfidence(score=score, reason="假模型评分：按引用覆盖率打分")
+        if schema is HistoryIntent:
+            from core.services.meals import recall_cue_hit
+
+            question = prompt.task.split("QUESTION:", 1)[-1].splitlines()[0].strip()
+            # 假模型用关键词启发式：规则 cue + 少量回忆性口癖，离线演示保持确定
+            personal = recall_cue_hit(question) or any(
+                k in question for k in ("那顿", "那餐", "后来", "我吃的", "我的记录")
+            )
+            return HistoryIntent(personal=personal, reason="假模型：关键词启发式判断个人历史意图")
         return TextOut(text=prompt.task)
 
 

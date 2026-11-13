@@ -117,6 +117,51 @@ def test_memory_falls_back_to_recent_on_recall_cue(tmp_path):
     assert "西兰花" in hits[0].quote  # 最近一条排在最前
 
 
+def test_recall_cue_regex_covers_natural_previous_meal_phrasings(tmp_path):
+    store = _store(tmp_path)
+    _rice(store)  # 2026-11-08
+    store.add_meal(
+        user_id="u1",
+        eaten_at="2026-11-09T18:40",
+        meal_type="晚餐",
+        foods=[{"name": "西兰花", "grams": 180, "carbs_g": 7.7}],
+    )
+    # "上一餐/上一顿/前一顿”这类自然说法也要回退到最近记录
+    for question in ("上一餐吃了什么", "上一顿吃了啥", "前一餐吃什么", "上顿饭吃的啥"):
+        hits = memory_evidences(store, "u1", question)
+        assert hits, question
+        assert "西兰花" in hits[0].quote, question  # 最近一条排在最前
+
+
+def test_previous_meal_phrasing_on_empty_archive_gets_notice(tmp_path):
+    hits = memory_evidences(_store(tmp_path), "new-user", "上一餐吃了什么")
+    assert [h.doc_id for h in hits] == ["meal-empty"]
+    assert "还没有任何餐食记录" in hits[0].quote
+
+
+def test_recall_cue_regex_does_not_overmatch(tmp_path):
+    store = _store(tmp_path)
+    _rice(store)
+    # “上周末”这类带“上”但不问餐食的问题不触发个人记录召回
+    assert memory_evidences(store, "u1", "上周末天气怎么样") == []
+
+
+def test_semantic_cue_fallback_pulls_recent_meals(tmp_path):
+    store = _store(tmp_path)
+    _rice(store)
+    # 正则没覆盖的回忆性问法：semantic_cue=True（模型意图命中）时回退到最近记录
+    question = "那顿饭后来怎么样"
+    assert memory_evidences(store, "u1", question) == []
+    hits = memory_evidences(store, "u1", question, semantic_cue=True)
+    assert hits and "米饭" in hits[0].quote
+
+
+def test_semantic_cue_on_empty_archive_gets_notice(tmp_path):
+    hits = memory_evidences(_store(tmp_path), "new-user", "那顿饭后来怎么样", semantic_cue=True)
+    assert [h.doc_id for h in hits] == ["meal-empty"]
+    assert "还没有任何餐食记录" in hits[0].quote
+
+
 def test_memory_ignores_unrelated_question_and_other_users(tmp_path):
     store = _store(tmp_path)
     _rice(store, "u1")

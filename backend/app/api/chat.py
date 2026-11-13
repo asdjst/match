@@ -17,7 +17,8 @@ from core.graph.state import GraphState
 from core.schemas.deliverable import Deliverable
 from core.schemas.profile import ProfileIn
 from core.services.food import build_food_evidence
-from core.services.meals import memory_evidences, recent_glucose_values
+from core.schemas.agent import HistoryIntent
+from core.services.meals import history_intent_prompt, memory_evidences, recall_cue_hit, recent_glucose_values
 from core.services.memory import answer_snippet
 
 router = APIRouter()
@@ -99,8 +100,16 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
             target_foods = [str(item.get("name") or "") for item in food_items]
             if not target_foods and _BACKREF.search(question):
                 target_foods = state.store.recent_food_names(req.session_id, user_id=user)
+            # 规则 cue 没覆盖的回忆性问法，交给 fast 档模型做意图分类；调用失败退回纯规则，不阻塞问答
+            semantic_cue = False
+            if not recall_cue_hit(question):
+                try:
+                    intent = state.llm.complete(history_intent_prompt(question), tier="fast", schema=HistoryIntent)
+                    semantic_cue = bool(intent.personal)
+                except Exception as exc:
+                    state.tracer.event(trace_id, "memory_error", {"error": f"intent: {str(exc)[:160]}"})
             for ev in memory_evidences(
-                state.meals, user, question, target_foods=target_foods
+                state.meals, user, question, target_foods=target_foods, semantic_cue=semantic_cue
             ):
                 eid = _next_evidence_id(pool)
                 pool[eid] = ev.model_copy(update={"evidence_id": eid}).model_dump()

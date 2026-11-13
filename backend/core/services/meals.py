@@ -4,14 +4,43 @@
 只作为“一次观察”呈现，不据此推断因果或药物建议。
 """
 
+import re
 from datetime import date, datetime, timedelta
 
 from core.schemas.common import SourceRef
 from core.schemas.evidence import Evidence
+from core.schemas.prompt import PromptBundle
 from core.services.store import MealStore
 
-# 没有点名食物、但明确在问“以前那顿”时，回退到最近几条记录
-_RECALL_CUES = ("上次", "上一次", "上回", "之前", "以前", "吃过", "那次", "这顿", "记得", "记录", "记忆")
+# 没有点名食物、但明确在问“以前那顿”时，回退到最近几条记录。
+# 用正则覆盖自然说法（上一餐 / 上顿饭 / 前一顿 …），子串列表容易漏词导致该召回却没召回
+_RECALL_CUE_RE = re.compile(
+    r"[上前]\s*一?\s*[餐顿]"  # 上一餐 / 上顿饭 / 前一顿 …
+    r"|上次|上一次|上回|之前|以前|吃过|那次|这顿|记得|记录|记忆"
+)
+
+
+def recall_cue_hit(question: str) -> bool:
+    """规则 cue 是否命中；正则没覆盖的回忆性问法由调用方用模型意图分类补判。"""
+    return bool(_RECALL_CUE_RE.search(question))
+
+
+_INTENT_SYSTEM = (
+    "你是个人历史意图分类器。判断用户的问题是否在询问本人（用户自己）的餐食、血糖等个人记录历史，"
+    "包括回忆性问法，例如“上一餐吃了什么”“那顿饭后来怎么样”“我之前吃过燕麦吗”“我这周碳水多少”“昨天血糖怎么样”。"
+    "纯饮食知识问题（“米饭多少碳水”）、泛泛的建议咨询（“血糖偏高怎么办”）、与个人历史无关的问题，都判为 false。"
+    "只输出合法 JSON，不要输出任何解释。"
+)
+
+
+def history_intent_prompt(question: str) -> PromptBundle:
+    """fast 档意图分类 prompt：正则 cue 漏掉的回忆性问法交给模型判断。"""
+    return PromptBundle(
+        role="planner",
+        system=_INTENT_SYSTEM,
+        task=f"QUESTION: {question}\n该问题是否在询问用户本人的餐食/血糖等个人记录历史？",
+        format_hint='{"personal": true/false, "reason": "一句话依据"}',
+    )
 
 # “今天吃了什么”这类按天盘点：只认明确的发问方式，避免“今天血糖高怎么办”误拉餐食
 _DAY_SCOPES = (("前天", 2), ("昨天", 1), ("今日", 0), ("今天", 0))
@@ -261,6 +290,7 @@ def memory_evidences(
     question: str,
     limit: int = 4,
     target_foods: list[str] | None = None,
+    semantic_cue: bool = False,
 ) -> list[Evidence]:
     """按食物名或“今天/昨天吃了什么”命中个人记录；明确问“上次”时回退到最近记录。
 
@@ -271,7 +301,8 @@ def memory_evidences(
     if not user_id or not question:
         return []
     meals = store.list_meals(user_id, limit=60)
-    cue = any(word in question for word in _RECALL_CUES)
+    # 规则 cue + 模型意图分类（semantic_cue）：宁可多召回几条个人记录，也别漏掉回忆性问法
+    cue = recall_cue_hit(question) or semantic_cue
     day = _day_scope(question)
     day_list = day is not None and any(word in question for word in _DAY_LIST_CUES)
     if not meals:

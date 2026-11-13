@@ -38,3 +38,10 @@ class ComposedAnswer(BaseModel):
     """writer 成文通道输出：把断言连成一段回答，引用编号原样保留。"""
 
     text: str = ""
+
+
+class HistoryIntent(BaseModel):
+    """个人历史意图分类：问题是否在问用户本人的餐食/血糖记录（含回忆性问法）。"""
+
+    personal: bool
+    reason: str = ""
