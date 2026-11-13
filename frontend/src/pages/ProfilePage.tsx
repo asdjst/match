@@ -29,6 +29,9 @@ const EMPTY: Profile = {
 
 const KEY = "glucoguard.profile";
 
+/** 餐食记录每页条数 */
+const MEAL_PAGE_SIZE = 10;
+
 function load(): Profile {
   try {
     const raw = localStorage.getItem(KEY);
@@ -85,6 +88,7 @@ export default function ProfilePage({
   const [query, setQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState<MealRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [mealPage, setMealPage] = useState(0);
 
   useEffect(() => {
     try {
@@ -136,6 +140,18 @@ export default function ProfilePage({
       return tokens.every((t) => hay.includes(t));
     });
   }, [meals, mealFilter, query]);
+
+  // 切筛选/改搜索时回到第一页
+  useEffect(() => {
+    setMealPage(0);
+  }, [mealFilter, query]);
+
+  const mealPageCount = Math.max(1, Math.ceil(filteredMeals.length / MEAL_PAGE_SIZE));
+  const mealPageSafe = Math.min(mealPage, mealPageCount - 1);
+  const visibleMeals = useMemo(
+    () => filteredMeals.slice(mealPageSafe * MEAL_PAGE_SIZE, (mealPageSafe + 1) * MEAL_PAGE_SIZE),
+    [filteredMeals, mealPageSafe],
+  );
 
   const saveGlucose = async (meal: MealRecord) => {
     const value = Number(glucoseValue);
@@ -462,8 +478,9 @@ export default function ProfilePage({
                 />
               </div>
             ) : (
+              <>
               <div className="meal-record-list">
-                {filteredMeals.map((meal) => (
+                {visibleMeals.map((meal) => (
                   <div className="meal-record" key={meal.meal_id}>
                     <div className="meal-record-time">
                       <strong>{formatEatenAt(meal.eaten_at).slice(5, 10)}</strong>
@@ -543,6 +560,30 @@ export default function ProfilePage({
                   </div>
                 ))}
               </div>
+              {mealPageCount > 1 ? (
+                <div className="meal-pager">
+                  <button
+                    type="button"
+                    className="row-action"
+                    disabled={mealPageSafe === 0}
+                    onClick={() => setMealPage(mealPageSafe - 1)}
+                  >
+                    上一页
+                  </button>
+                  <span>
+                    {mealPageSafe + 1} / {mealPageCount} 页 · 共 {filteredMeals.length} 条
+                  </span>
+                  <button
+                    type="button"
+                    className="row-action"
+                    disabled={mealPageSafe >= mealPageCount - 1}
+                    onClick={() => setMealPage(mealPageSafe + 1)}
+                  >
+                    下一页
+                  </button>
+                </div>
+              ) : null}
+              </>
             )}
           </>
         ) : null}
