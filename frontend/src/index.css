@@ -4205,17 +4205,11 @@ body,
   font-variant-numeric: tabular-nums;
 }
 
-.stat-hint,
-.stat-foot {
+.stat-hint {
   margin: 6px 0 0;
   font-size: 9.5px;
   line-height: 1.65;
   color: var(--stat-muted);
-}
-
-.stat-foot {
-  padding-top: 10px;
-  border-top: 1px dashed var(--stat-line);
 }
 
 .stat-empty {

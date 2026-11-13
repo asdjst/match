@@ -701,7 +701,7 @@ export default function HealthTrends({ meals }: { meals: MealRecord[] }) {
         <Banner
           status="warning"
           title="正在看示例数据"
-          description="14 天模拟记录，只用于展示统计口径，不写入健康档案，也不参与问答记忆。再点一次「示例数据」回到自己的记录。"
+          description="示例数据不会写入你的健康档案。再点一次「示例数据」切回真实记录。"
         />
       ) : null}
 
@@ -709,7 +709,7 @@ export default function HealthTrends({ meals }: { meals: MealRecord[] }) {
         <div className="stat-empty">
           <EmptyState
             title={`${rangeCaption}没有血糖读数`}
-            description="在上面的餐食记录里给某一餐补一个餐前或餐后血糖，这里就会出报告；也可以先用示例数据看看完整口径。"
+            description="给任意一餐补一条餐前或餐后血糖，这里就会生成报告。"
             actions={
               <Button label="看示例报告" variant="secondary" size="sm" onClick={() => setDemo(true)} />
             }
@@ -822,7 +822,6 @@ export default function HealthTrends({ meals }: { meals: MealRecord[] }) {
             <span>
               {rangeCaption} · {spanPoints.length} 条读数
             </span>
-            <em>横轴为真实时刻，只连相邻 3 小时内的点</em>
           </div>
         )}
 
@@ -869,7 +868,7 @@ export default function HealthTrends({ meals }: { meals: MealRecord[] }) {
             </button>
           </div>
         ) : (
-          <p className="stat-hint">点曲线上的圆点看这一针对应的餐食；下方 早/午/晚/加 是就餐时刻。</p>
+          <p className="stat-hint">点曲线上的圆点查看对应餐食。</p>
         )}
       </section>
 
@@ -882,9 +881,7 @@ export default function HealthTrends({ meals }: { meals: MealRecord[] }) {
           {bins.length >= 2 ? (
             <>
               <HourlyProfile bins={bins} target={target} />
-              <p className="stat-hint">
-                竖条是该小时所有读数的最低–最高，折线是平均。看哪个时段反复偏高，比单看某一天更稳。
-              </p>
+              <p className="stat-hint">竖条为该小时读数的最低–最高，折线为平均值。</p>
             </>
           ) : (
             <p className="chart-empty">读数集中在同一小时，换一个更大的范围再看。</p>
@@ -929,7 +926,6 @@ export default function HealthTrends({ meals }: { meals: MealRecord[] }) {
             <span>{points.filter((p) => p.carbs != null && p.minutesAfter > 0).length} 个点</span>
           </div>
           <CarbScatter points={points} target={target} />
-          <p className="stat-hint">同一餐的碳水量和餐后读数配对，只是分布，不代表因果，也不做拟合预测。</p>
         </section>
 
         <section className="stat-block">
@@ -954,11 +950,6 @@ export default function HealthTrends({ meals }: { meals: MealRecord[] }) {
         </section>
       </div>
 
-      <p className="stat-foot">
-        口径说明：读数时刻按「就餐时间 + 餐后时长」推算；占比按读数条数计算，不是动态血糖的时间占比。
-        手动点测无法估算糖化血红蛋白（GMI 需要连续 14 天、有效率 70% 以上的动态血糖数据），因此这里不给该指标。
-        所有数字只描述已记录的数据，不补点、不预测，也不构成用药建议。
-      </p>
     </div>
   );
 }

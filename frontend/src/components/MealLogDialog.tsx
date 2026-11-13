@@ -221,7 +221,7 @@ export function MealLogDialog({
           </label>
 
           <details className="meal-dialog-private">
-            <summary>用药记录（仅本人可见，不参与问答）</summary>
+            <summary>用药记录（仅本人可见）</summary>
             <input
               className="field-input"
               placeholder="如 8 单位；只记录，不建议、不比较"
