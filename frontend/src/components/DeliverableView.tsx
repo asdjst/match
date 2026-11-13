@@ -105,6 +105,26 @@ function AssertionLine({
   );
 }
 
+/** 成文回答的流式草稿：writer 边生成边推，校验通过后由正式 deliverable 替换 */
+export function StreamingAnswer({
+  text,
+  activeEvidenceId,
+  onCiteClick,
+}: {
+  text: string;
+  activeEvidenceId: string | null;
+  onCiteClick: (id: string) => void;
+}) {
+  return (
+    <div className="answer-prose">
+      <p className="answer-para">
+        <CiteText text={text} activeEvidenceId={activeEvidenceId} onCiteClick={onCiteClick} />
+        <span className="stream-caret" aria-hidden />
+      </p>
+    </div>
+  );
+}
+
 export function DeliverableView({
   deliverable: d,
   activeEvidenceId,
@@ -181,6 +201,7 @@ export function DeliverableView({
         <span>置信度 {Math.round(d.confidence * 100)}%</span>
         <span>{d.confidence_source === "llm" ? "大模型评分" : "公式兜底"}</span>
         <span>引用 {d.citations.length} 条 · {channelNote}</span>
+        {d.from_cache ? <span className="cache-tag">语义缓存</span> : null}
       </div>
 
       {d.confidence_reason ? (

@@ -6,7 +6,7 @@ import { Banner, Button, Card, Stack, TextArea, Text } from "@astryxdesign/core"
 import { useRuns, type RunState } from "../store/runs";
 import { useAuth } from "../store/auth";
 import { AuthDialog } from "../components/AuthDialog";
-import { DeliverableView } from "../components/DeliverableView";
+import { DeliverableView, StreamingAnswer } from "../components/DeliverableView";
 import { AgentFeedback, ExecutionCard, EXECUTION_ICON } from "../components/AgentActivity";
 import { MODALITY_META } from "../components/EvidenceCard";
 import { MealCard } from "../components/MealCard";
@@ -14,6 +14,7 @@ import { MealLogDialog, formatEatenAt, localNow, mealTypeFor } from "../componen
 import { AnswerChart } from "../components/MealCharts";
 import { BrandMark } from "../components/BrandMark";
 import HealthFileCard from "../components/HealthFileCard";
+import MealDiaryBook from "../components/MealDiaryBook";
 import { VoiceInputButton } from "../components/VoiceInputButton";
 import { analyzeFood, listMeals } from "../api/client";
 import {
@@ -221,6 +222,14 @@ function RunMessage({
               />
             ) : null}
 
+            {run.streamText != null && !run.deliverable ? (
+              <StreamingAnswer
+                text={run.streamText}
+                activeEvidenceId={activeEvidenceId}
+                onCiteClick={(id) => onCiteClick(id, run)}
+              />
+            ) : null}
+
             {run.deliverable ? (
               <DeliverableView
                 deliverable={run.deliverable}
@@ -355,6 +364,7 @@ export default function ChatPage() {
   const [mealsError, setMealsError] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [fileOpen, setFileOpen] = useState(false);
+  const [diaryOpen, setDiaryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -376,6 +386,25 @@ export default function ChatPage() {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
+
+  // 右侧图钉小卡片的预览数据：最近一天 + 今天餐数 + 共几天
+  const diaryPreview = useMemo(() => {
+    if (!meals.length) return null;
+    const latest = meals[0];
+    const key = latest.eaten_at.slice(0, 10);
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const d = new Date(`${key}T00:00:00`);
+    const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+    return {
+      isToday: key === today,
+      dateLabel: Number.isNaN(d.getTime()) ? key : `${d.getMonth() + 1}月${d.getDate()}日 ${weekdays[d.getDay()]}`,
+      latestText: `${latest.meal_type} · ${latest.foods.map((f) => `${f.name} ${Math.round(f.grams)}g`).join("、")}`,
+      todayCount: meals.filter((m) => m.eaten_at.slice(0, 10) === today).length,
+      days: new Set(meals.map((m) => m.eaten_at.slice(0, 10))).size,
+    };
+  }, [meals]);
 
   const latestRun = threadRuns.at(-1);
   const runningKey = latestRun?.phase === "streaming" ? latestRun.key : null;
@@ -725,25 +754,64 @@ export default function ChatPage() {
         </div>
       </div>
       </div>
+      <div className="fab-stack">
+        <button
+          ref={fileTriggerRef}
+          type="button"
+          className="health-file-trigger"
+          aria-label={fileOpen ? "收起健康档案" : "展开健康档案"}
+          aria-controls="health-file-card"
+          aria-expanded={fileOpen}
+          title={fileOpen ? "收起健康档案" : "健康档案"}
+          onClick={() => {
+            setFileOpen((value) => !value);
+            setDiaryOpen(false);
+            closeExecution();
+          }}
+        >
+          {FILE_ICON}
+        </button>
+      </div>
       <button
-        ref={fileTriggerRef}
         type="button"
-        className="health-file-trigger"
-        aria-label={fileOpen ? "收起健康档案" : "展开健康档案"}
-        aria-controls="health-file-card"
-        aria-expanded={fileOpen}
-        title={fileOpen ? "收起健康档案" : "健康档案"}
+        className="diary-tab"
+        aria-controls="meal-diary-book"
+        aria-expanded={diaryOpen}
+        title={diaryOpen ? "收起饮食日记" : "打开饮食日记"}
         onClick={() => {
-          setFileOpen((value) => !value);
+          setDiaryOpen((value) => !value);
+          setFileOpen(false);
           closeExecution();
         }}
       >
-        {FILE_ICON}
+        <span className="diary-pin" aria-hidden="true" />
+        {diaryPreview ? (
+          <>
+            <span className="diary-tab-date">{diaryPreview.isToday ? "今天" : diaryPreview.dateLabel}</span>
+            <span className="diary-tab-meal">{diaryPreview.latestText}</span>
+            <span className="diary-tab-foot">
+              今天 {diaryPreview.todayCount} 餐 · 共 {diaryPreview.days} 天
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="diary-tab-date">饮食日记</span>
+            <span className="diary-tab-meal">还是空白页</span>
+            <span className="diary-tab-foot">点击写第一篇</span>
+          </>
+        )}
       </button>
       <HealthFileCard
         open={fileOpen}
         onClose={() => setFileOpen(false)}
         anchorRef={fileTriggerRef}
+      />
+      <MealDiaryBook
+        open={diaryOpen}
+        onClose={() => setDiaryOpen(false)}
+        meals={meals}
+        mealsError={mealsError}
+        onChanged={() => void refreshMeals()}
       />
       {selected ? (
         <CitationPanel

@@ -2,7 +2,7 @@
  * 健康趋势报告：时间范围 + 单日 24 小时 + 餐后时段 + 分布与波动。
  * 口径参照动态血糖（AGP）报告，但数据是手动点测，所以占比按「读数」算，不推算糖化。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Banner, Button, EmptyState, Text } from "@astryxdesign/core";
 import type { MealRecord, MealType } from "../types";
 import { buildDemoMeals } from "../lib/demoMeals";
@@ -102,6 +102,7 @@ function GlucoseCurve({
   onSelect,
   emptyHint,
 }: CurveProps) {
+  const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const H = 172;
   const box = { l: 28, r: 12, t: 14, b: showMeals ? 34 : 24 };
   const plotW = W - box.l - box.r;
@@ -132,6 +133,12 @@ function GlucoseCurve({
   return (
     <figure className="stat-fig">
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="血糖曲线，含目标区间阴影">
+        <defs>
+          <linearGradient id={`curve-area-${gid}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" style={{ stopColor: "var(--stat-ok)" }} stopOpacity="0.38" />
+            <stop offset="1" style={{ stopColor: "var(--stat-ok)" }} stopOpacity="0" />
+          </linearGradient>
+        </defs>
         <rect
           x={box.l}
           y={y(target.high)}
@@ -161,13 +168,23 @@ function GlucoseCurve({
         ))}
         {segments.map((seg) =>
           seg.length > 1 ? (
-            <polyline
-              key={seg[0].id}
-              points={seg.map((p) => `${x(p.t)},${y(p.value)}`).join(" ")}
-              pathLength={1}
-              className="stat-line"
-              fill="none"
-            />
+            <g key={seg[0].id}>
+              <polygon
+                className="stat-area"
+                style={{ fill: `url(#curve-area-${gid})` }}
+                points={[
+                  ...seg.map((p) => `${x(p.t)},${y(p.value)}`),
+                  `${x(seg[seg.length - 1].t)},${box.t + plotH}`,
+                  `${x(seg[0].t)},${box.t + plotH}`,
+                ].join(" ")}
+              />
+              <polyline
+                points={seg.map((p) => `${x(p.t)},${y(p.value)}`).join(" ")}
+                pathLength={1}
+                className="stat-line"
+                fill="none"
+              />
+            </g>
           ) : null,
         )}
         {points.map((p) => {
@@ -285,6 +302,7 @@ function HourlyProfile({ bins, target }: { bins: HourBin[]; target: Target }) {
 /* ——————————————————— 每日碳水 + 平均血糖 ——————————————————— */
 
 function DailyChart({ rows, target }: { rows: DayRow[]; target: Target }) {
+  const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const H = 176;
   const box = { l: 26, r: 26, t: 16, b: 24 };
   const plotW = W - box.l - box.r;
@@ -302,6 +320,12 @@ function DailyChart({ rows, target }: { rows: DayRow[]; target: Target }) {
   return (
     <figure className="stat-fig">
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="每日碳水合计柱状与当日平均血糖折线">
+        <defs>
+          <linearGradient id={`carb-${gid}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" style={{ stopColor: "var(--stat-carb)" }} stopOpacity="1" />
+            <stop offset="1" style={{ stopColor: "var(--stat-carb)" }} stopOpacity="0.45" />
+          </linearGradient>
+        </defs>
         <rect
           x={box.l}
           y={yG(target.high)}
@@ -334,6 +358,7 @@ function DailyChart({ rows, target }: { rows: DayRow[]; target: Target }) {
                 height={Math.max(0, box.t + plotH - top)}
                 rx={2}
                 className="stat-carb-bar"
+                style={{ fill: `url(#carb-${gid})` }}
               >
                 <title>{`${row.label} · 碳水 ${row.carbs}g（${row.mealCount} 餐）${row.mean == null ? " · 无血糖读数" : ` · 平均血糖 ${row.mean.toFixed(1)}`}`}</title>
               </rect>
@@ -429,7 +454,7 @@ function CarbScatter({ points, target }: { points: GlucosePoint[]; target: Targe
             key={p.id}
             cx={x(p.carbs as number)}
             cy={y(p.value)}
-            r={3.6}
+            r={4}
             className={`stat-scatter m-${MEAL_SLUG[p.mealType]}`}
           >
             <title>{`${p.mealType} · 碳水 ${Math.round(p.carbs as number)}g · ${timingLabel(p.minutesAfter)} ${p.value} mmol/L\n${p.foods}`}</title>

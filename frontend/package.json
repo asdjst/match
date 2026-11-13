@@ -13,6 +13,7 @@
     "@astryxdesign/theme-neutral": "^0.7.11",
     "@stylexjs/stylex": "^0.19.1",
     "@xyflow/react": "^12.12.1",
+    "lxgw-wenkai-webfont": "^1.7.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

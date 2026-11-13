@@ -14,11 +14,10 @@ import {
 } from "react";
 import ProfilePage from "../pages/ProfilePage";
 
-type SectionKey = "basics" | "records" | "trend";
+type SectionKey = "basics" | "trend";
 
 const TABS: Array<{ key: SectionKey; label: string }> = [
   { key: "basics", label: "基础档案" },
-  { key: "records", label: "餐食记录" },
   { key: "trend", label: "健康趋势" },
 ];
 
@@ -200,7 +199,7 @@ export default function HealthFileCard({ open, onClose, anchorRef }: HealthFileC
     const nearEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 8;
     setHint(nearEnd ? "已到档案末页" : "向下滚动查看更多");
     let current: SectionKey = "basics";
-    for (const key of ["records", "trend"] as const) {
+    for (const key of ["trend"] as const) {
       const anchor = scroller.querySelector<HTMLElement>(`#health-${key}`);
       if (anchor && anchor.offsetTop <= scroller.scrollTop + 80) current = key;
     }

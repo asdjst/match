@@ -2,7 +2,7 @@
  * 个人餐食 / 血糖图表：档案页和回答里的统计共用一套自绘 SVG。
  * 只画个人记录，不补点、不预测。
  */
-import { useMemo, type CSSProperties } from "react";
+import { useId, useMemo, type CSSProperties } from "react";
 import { EmptyState } from "@astryxdesign/core";
 import type { MealRecord } from "../types";
 
@@ -34,6 +34,7 @@ function glucoseTiming(minutes: number): string {
 
 /** 近 N 天每日碳水合计（柱状） */
 export function DailyCarbsChart({ meals, days = 7 }: { meals: MealRecord[]; days?: number }) {
+  const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const data = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -78,6 +79,12 @@ export function DailyCarbsChart({ meals, days = 7 }: { meals: MealRecord[]; days
   return (
     <div className="bar-chart">
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`最近 ${days} 天每日碳水合计`}>
+        <defs>
+          <linearGradient id={`bar-${gid}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" style={{ stopColor: "var(--brand-green)" }} stopOpacity="1" />
+            <stop offset="1" style={{ stopColor: "var(--brand-green)" }} stopOpacity="0.45" />
+          </linearGradient>
+        </defs>
         {grid.map((v) => (
           <g key={v}>
             <line x1={padBox.l} x2={W} y1={y(v)} y2={y(v)} className="trend-grid" />
@@ -98,6 +105,7 @@ export function DailyCarbsChart({ meals, days = 7 }: { meals: MealRecord[]; days
                 height={Math.max(0, padBox.t + plotH - top)}
                 rx={3}
                 className={`bar-rect bar-rect--v${slot.isToday ? " is-today" : ""}`}
+                style={{ fill: `url(#bar-${gid})` }}
               >
                 <title>
                   {slot.label} {slot.weekday} · 碳水 {slot.carbs}g（{slot.count} 餐）
@@ -121,6 +129,7 @@ export function DailyCarbsChart({ meals, days = 7 }: { meals: MealRecord[]; days
 
 /** 某几餐的碳水横向对比（用于“今天吃了什么”） */
 export function MealCarbsChart({ meals }: { meals: MealRecord[] }) {
+  const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
   if (meals.length === 0) {
     return <p className="chart-empty">今天还没有餐食记录。</p>;
   }
@@ -138,6 +147,12 @@ export function MealCarbsChart({ meals }: { meals: MealRecord[] }) {
   return (
     <div className="bar-chart">
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="各餐碳水对比">
+        <defs>
+          <linearGradient id={`hbar-${gid}`} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" style={{ stopColor: "var(--brand-green)" }} stopOpacity="1" />
+            <stop offset="1" style={{ stopColor: "var(--brand-green)" }} stopOpacity="0.45" />
+          </linearGradient>
+        </defs>
         {rows.map((row, i) => {
           const cy = 12 + i * rowH;
           const width = (row.carbs / max) * barMax;
@@ -147,7 +162,15 @@ export function MealCarbsChart({ meals }: { meals: MealRecord[] }) {
                 {row.meal.meal_type} {row.meal.eaten_at.slice(11, 16)}
               </text>
               <rect x={left} y={cy + 2} width={barMax} height={12} rx={3} className="bar-track" />
-              <rect x={left} y={cy + 2} width={Math.max(0, width)} height={12} rx={3} className="bar-rect bar-rect--h">
+              <rect
+                x={left}
+                y={cy + 2}
+                width={Math.max(0, width)}
+                height={12}
+                rx={3}
+                className="bar-rect bar-rect--h"
+                style={{ fill: `url(#hbar-${gid})` }}
+              >
                 <title>{`${foodsText(row.meal)} · 碳水 ${row.carbs}g`}</title>
               </rect>
               <text x={W} y={cy + 12} textAnchor="end" className="bar-value">
@@ -171,6 +194,7 @@ export function GlucoseTrendChart({
   days?: number;
   hideWhenEmpty?: boolean;
 }) {
+  const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const points = useMemo(() => {
     const cutoff = Date.now() - days * 24 * 3600 * 1000;
     const items: { t: number; v: number; label: string }[] = [];
@@ -220,6 +244,12 @@ export function GlucoseTrendChart({
   return (
     <div className="trend-chart">
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`最近 ${days} 天血糖折线`}>
+        <defs>
+          <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" style={{ stopColor: "var(--brand-green)" }} stopOpacity="0.34" />
+            <stop offset="1" style={{ stopColor: "var(--brand-green)" }} stopOpacity="0" />
+          </linearGradient>
+        </defs>
         {grid.map((v) => (
           <g key={v}>
             <line x1={padBox.l} x2={W} y1={y(v)} y2={y(v)} className="trend-grid" />
@@ -228,6 +258,11 @@ export function GlucoseTrendChart({
             </text>
           </g>
         ))}
+        <polygon
+          className="trend-area"
+          style={{ fill: `url(#area-${gid})` }}
+          points={`${path} ${x(points[points.length - 1].t)},${H - padBox.b} ${x(points[0].t)},${H - padBox.b}`}
+        />
         <polyline points={path} pathLength={1} className="trend-line" fill="none" />
         {points.map((p, i) => (
           <circle

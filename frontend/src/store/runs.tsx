@@ -57,6 +57,8 @@ export interface RunState {
   approving: boolean;
   /** 本条提问附带的餐食识别结果（发送后仍保留，供消息里回看） */
   food?: FoodContext;
+  /** 成文回答的流式草稿（answer_stream 累积；成文校验通过/回滚后清空） */
+  streamText: string | null;
   startedAt: number;
   finishedAt: number | null;
 }
@@ -193,6 +195,7 @@ export function RunsProvider({ children }: { children: ReactNode }) {
         approved: false,
         approving: false,
         food,
+        streamText: null,
         startedAt: Date.now(),
         finishedAt: null,
       };
@@ -317,6 +320,7 @@ export function RunsProvider({ children }: { children: ReactNode }) {
       roundNo: snap.round_no,
       approved: false,
       approving: false,
+      streamText: null,
       food:
         items.length > 0
           ? {
@@ -468,7 +472,12 @@ function reduceEvent(r: RunState, ev: SseEvent, now: number, deltaMs: () => numb
         ],
       };
     case "deliverable":
-      return { ...r, deliverable: ev.deliverable };
+      // 最终交付物到了：用它替换流式草稿（草稿可能已被 answer_abort 清掉）
+      return { ...r, deliverable: ev.deliverable, streamText: null };
+    case "answer_stream":
+      return { ...r, streamText: (r.streamText ?? "") + ev.delta };
+    case "answer_abort":
+      return { ...r, streamText: null };
     case "error":
       return { ...r, error: ev.message, activeNode: null };
     case "needs_human":

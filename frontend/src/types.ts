@@ -153,6 +153,8 @@ export interface Deliverable {
   degraded_reason?: string | null;
   refused: boolean;
   refusal_reason: string | null;
+  /** 语义缓存命中，直接回放上次交付物 */
+  from_cache?: boolean;
 }
 
 export interface NodeProgressEvent {
@@ -172,6 +174,8 @@ export type SseEvent =
   | { type: "deliverable"; deliverable: Deliverable }
   | { type: "error"; message: string }
   | { type: "needs_human"; run_id: string; reason: string; issues?: string[] }
+  | { type: "answer_stream"; delta: string }
+  | { type: "answer_abort" }
   | { type: "done"; pending_human?: boolean };
 
 /** AgentResult（core/schemas/agent.py，node_results 的值） */

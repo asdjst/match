@@ -6,6 +6,10 @@ import "@astryxdesign/core/reset.css";
 import "@astryxdesign/core/astryx.css";
 import "@astryxdesign/theme-neutral/theme.css";
 
+// 日记手写体：霞鹜文楷（开源免费），本地打包、按 unicode-range 子集按需加载
+import "lxgw-wenkai-webfont/lxgwwenkai-regular.css";
+import "lxgw-wenkai-webfont/lxgwwenkai-bold.css";
+
 // React Flow 基础样式（DAG 页）
 import "@xyflow/react/dist/style.css";
 
