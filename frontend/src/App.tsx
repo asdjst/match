@@ -1,5 +1,6 @@
 import { Button, Stack, Switch } from "@astryxdesign/core";
 import { useUi } from "./store/ui";
+import { useRuns } from "./store/runs";
 import { AccountEntry } from "./components/AccountEntry";
 import { ConversationList } from "./components/ConversationList";
 import ChatPage from "./pages/ChatPage";
@@ -12,6 +13,9 @@ const CHAT_ICON = (
 
 export default function App() {
   const { mode, setMode } = useUi();
+  const { runs, activeSessionId, newConversation } = useRuns();
+  // 当前会话已有消息时，点击工作台才新开一段；空会话重复点不产生新 session
+  const currentHasRuns = runs.some((r) => r.sessionId === activeSessionId);
 
   return (
     <div className="app-shell">
@@ -26,7 +30,17 @@ export default function App() {
         </div>
 
         <nav className="side-links" aria-label="工作台导航">
-          <Button label="控糖工作台" variant="secondary" icon={CHAT_ICON} aria-current="page" width="100%" />
+          <Button
+            label="控糖工作台"
+            variant="secondary"
+            icon={CHAT_ICON}
+            aria-current="page"
+            width="100%"
+            tooltip="点击新开一段对话"
+            onClick={() => {
+              if (currentHasRuns) newConversation();
+            }}
+          />
         </nav>
 
         <ConversationList />
