@@ -95,6 +95,9 @@ class AccountStore:
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL 下 synchronous=NORMAL 足够安全且写入更快；busy_timeout 避免并发写直接报 locked
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
     def register(self, username: str, password: str) -> dict | None:
