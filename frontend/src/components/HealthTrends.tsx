@@ -164,6 +164,7 @@ function GlucoseCurve({
             <polyline
               key={seg[0].id}
               points={seg.map((p) => `${x(p.t)},${y(p.value)}`).join(" ")}
+              pathLength={1}
               className="stat-line"
               fill="none"
             />
@@ -269,6 +270,7 @@ function HourlyProfile({ bins, target }: { bins: HourBin[]; target: Target }) {
         ))}
         <polyline
           points={bins.map((b) => `${x(b.hour)},${y(b.mean)}`).join(" ")}
+          pathLength={1}
           className="stat-line"
           fill="none"
         />
@@ -348,6 +350,7 @@ function DailyChart({ rows, target }: { rows: DayRow[]; target: Target }) {
             points={withGlucose
               .map((r) => `${box.l + slot * rows.indexOf(r) + slot / 2},${yG(r.mean as number)}`)
               .join(" ")}
+            pathLength={1}
             className="stat-line stat-line--mean"
             fill="none"
           />

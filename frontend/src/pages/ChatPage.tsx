@@ -1,7 +1,7 @@
 /**
  * ChatPage：SSE 流式会话 + 断言引用 + 证据卡侧栏 + 断点放行。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Banner, Button, Card, Stack, TextArea, Text } from "@astryxdesign/core";
 import { useRuns, type RunState } from "../store/runs";
 import { useAuth } from "../store/auth";
@@ -321,6 +321,7 @@ function CitationPanel({
           <div
             key={i}
             className={`cite-line${i === 0 && s.section && line === s.section ? " is-heading" : " is-quoted"}`}
+            style={{ "--cite-i": `${Math.min(i, 14) * 26}ms` } as CSSProperties}
           >
             <span className="cite-ln">{i + 1}</span>
             <span className="cite-text">{line}</span>

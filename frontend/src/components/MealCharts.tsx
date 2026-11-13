@@ -2,7 +2,7 @@
  * 个人餐食 / 血糖图表：档案页和回答里的统计共用一套自绘 SVG。
  * 只画个人记录，不补点、不预测。
  */
-import { useMemo } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { EmptyState } from "@astryxdesign/core";
 import type { MealRecord } from "../types";
 
@@ -97,7 +97,7 @@ export function DailyCarbsChart({ meals, days = 7 }: { meals: MealRecord[]; days
                 width={barW}
                 height={Math.max(0, padBox.t + plotH - top)}
                 rx={3}
-                className={`bar-rect${slot.isToday ? " is-today" : ""}`}
+                className={`bar-rect bar-rect--v${slot.isToday ? " is-today" : ""}`}
               >
                 <title>
                   {slot.label} {slot.weekday} · 碳水 {slot.carbs}g（{slot.count} 餐）
@@ -147,7 +147,7 @@ export function MealCarbsChart({ meals }: { meals: MealRecord[] }) {
                 {row.meal.meal_type} {row.meal.eaten_at.slice(11, 16)}
               </text>
               <rect x={left} y={cy + 2} width={barMax} height={12} rx={3} className="bar-track" />
-              <rect x={left} y={cy + 2} width={Math.max(0, width)} height={12} rx={3} className="bar-rect">
+              <rect x={left} y={cy + 2} width={Math.max(0, width)} height={12} rx={3} className="bar-rect bar-rect--h">
                 <title>{`${foodsText(row.meal)} · 碳水 ${row.carbs}g`}</title>
               </rect>
               <text x={W} y={cy + 12} textAnchor="end" className="bar-value">
@@ -228,9 +228,16 @@ export function GlucoseTrendChart({
             </text>
           </g>
         ))}
-        <polyline points={path} className="trend-line" fill="none" />
+        <polyline points={path} pathLength={1} className="trend-line" fill="none" />
         {points.map((p, i) => (
-          <circle key={i} cx={x(p.t)} cy={y(p.v)} r={dotR} className="trend-dot">
+          <circle
+            key={i}
+            cx={x(p.t)}
+            cy={y(p.v)}
+            r={dotR}
+            className="trend-dot"
+            style={{ "--dot-i": `${Math.min(320 + i * 45, 1100)}ms` } as CSSProperties}
+          >
             <title>{p.label}</title>
           </circle>
         ))}
