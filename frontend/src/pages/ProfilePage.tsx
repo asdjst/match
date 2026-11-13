@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Banner, Button, EmptyState, Text } from "@astryxdesign/core";
+import { AlertDialog, Banner, Button, EmptyState, Text } from "@astryxdesign/core";
 import { addGlucose, deleteGlucose, deleteMeal, listMeals } from "../api/client";
 import { AuthDialog } from "../components/AuthDialog";
 import { MealLogDialog, formatEatenAt } from "../components/MealLogDialog";
@@ -83,6 +83,8 @@ export default function ProfilePage({
   const [glucoseMinutes, setGlucoseMinutes] = useState(120);
   const [mealFilter, setMealFilter] = useState<MealType | "全部">("全部");
   const [query, setQuery] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<MealRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     try {
@@ -156,13 +158,17 @@ export default function ProfilePage({
     }
   };
 
-  const removeMeal = async (meal: MealRecord) => {
-    if (!window.confirm(`删除 ${formatEatenAt(meal.eaten_at)} 的这条餐食记录？`)) return;
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
     try {
-      await deleteMeal(meal.meal_id);
+      await deleteMeal(pendingDelete.meal_id);
+      setPendingDelete(null);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -214,6 +220,23 @@ export default function ProfilePage({
         open={authMode !== null}
         initialMode={authMode ?? "login"}
         onClose={() => setAuthMode(null)}
+      />
+      <AlertDialog
+        isOpen={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setPendingDelete(null);
+        }}
+        title="删除这条餐食记录？"
+        description={
+          pendingDelete
+            ? `${formatEatenAt(pendingDelete.eaten_at)} ${pendingDelete.meal_type} · ${foodsText(pendingDelete)}。记录和它下面的血糖读数会一起删除，不可恢复。`
+            : ""
+        }
+        cancelLabel="取消"
+        actionLabel="删除"
+        actionVariant="destructive"
+        isActionLoading={deleting}
+        onAction={() => void confirmDelete()}
       />
     </>
   );
@@ -513,7 +536,7 @@ export default function ProfilePage({
                       >
                         补血糖
                       </button>
-                      <button type="button" className="row-action row-action--danger" onClick={() => void removeMeal(meal)}>
+                      <button type="button" className="row-action row-action--danger" onClick={() => setPendingDelete(meal)}>
                         删除
                       </button>
                     </div>
