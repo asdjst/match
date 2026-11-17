@@ -285,3 +285,81 @@ export const NODE_LABELS: Record<GraphNodeName, string> = {
   critic: "Critic 审校",
   writer: "Writer 交付",
 };
+
+/** 知识库维护页：GET /api/kb/overview */
+export interface KbSection {
+  id: string;
+  section: string;
+  modality: string;
+  tokens: number;
+  status: string;
+  preview: string;
+  text: string;
+  in_collection: boolean;
+}
+
+export interface KbFile {
+  file_path: string;
+  documents: number;
+  tokens: number;
+  in_collection: number;
+  modalities: string[];
+  sections: KbSection[];
+}
+
+export interface KbSignal {
+  level: "ok" | "warn" | "bad";
+  title: string;
+  detail: string;
+  action: string | null;
+}
+
+export interface KbDuplicate {
+  count: number;
+  file_path: string;
+  section: string;
+  preview: string;
+  document_ids: string[];
+}
+
+export interface KbOverview {
+  status: "ok" | "warn" | "bad";
+  health: { message?: string };
+  configured_collection: string;
+  base_url: string;
+  storage_collection: string;
+  storage_documents: number;
+  generated_at: string;
+  totals: {
+    documents: number;
+    chunks: number;
+    tokens: number;
+    files: number;
+    in_collection: number;
+    mismatched: number;
+    missing_section: number;
+    failed: number;
+    modalities: Record<string, number>;
+    statuses: Record<string, number>;
+  };
+  files: KbFile[];
+  duplicates: KbDuplicate[];
+  signals: KbSignal[];
+}
+
+export interface KbSearchHit {
+  id: string;
+  doc_id: string;
+  score: number;
+  text: string;
+  file_path: string | null;
+  section: string | null;
+  modality: string;
+}
+
+export interface KbSearchResult {
+  query: string;
+  configured_collection: string;
+  latency_ms: number;
+  hits: KbSearchHit[];
+}

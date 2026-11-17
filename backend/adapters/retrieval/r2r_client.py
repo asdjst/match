@@ -1,5 +1,6 @@
 import json
 import time
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -26,6 +27,71 @@ class R2RClient:
         self._top_k = top_k
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._http = httpx.Client(base_url=self._base, headers=headers, timeout=timeout_s, trust_env=False)
+
+    @property
+    def collection(self) -> str:
+        return self._collection
+
+    @property
+    def base_url(self) -> str:
+        return self._base
+
+    def health(self) -> dict:
+        resp = self._http.get("/v3/health")
+        resp.raise_for_status()
+        return resp.json().get("results") or {}
+
+    def list_collections(self, limit: int = 100) -> list[dict]:
+        resp = self._http.get("/v3/collections", params={"limit": limit, "offset": 0})
+        resp.raise_for_status()
+        return resp.json().get("results") or []
+
+    def list_documents(self, limit: int = 1000, offset: int = 0) -> tuple[list[dict], int]:
+        resp = self._http.get("/v3/documents", params={"limit": limit, "offset": offset})
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("results") or [], int(body.get("total_entries") or 0)
+
+    def list_chunks(self, limit: int = 1000, offset: int = 0) -> tuple[list[dict], int]:
+        resp = self._http.get("/v3/chunks", params={"limit": limit, "offset": offset})
+        resp.raise_for_status()
+        body = resp.json()
+        out = []
+        for item in body.get("results") or []:
+            metadata = item.get("metadata", {}) or {}
+            out.append({
+                "id": str(item.get("id") or ""),
+                "document_id": str(item.get("document_id") or ""),
+                "text": item.get("text", ""),
+                "metadata": metadata,
+            })
+        return out, int(body.get("total_entries") or 0)
+
+    def search_chunks(self, query: str, limit: int = 8) -> list[dict]:
+        """维护页的召回预览：与线上同集合过滤，返回向量分数便于看排序。"""
+        payload = {
+            "query": query,
+            "search_settings": {
+                "use_semantic_search": True,
+                "limit": max(1, limit),
+                "filters": self._filters(None),
+            },
+        }
+        resp = self._http.post("/v3/chunks/search", json=payload)
+        resp.raise_for_status()
+        out = []
+        for item in resp.json().get("results") or []:
+            metadata = item.get("metadata", {}) or {}
+            out.append({
+                "id": str(item.get("id") or ""),
+                "doc_id": str(item.get("document_id") or ""),
+                "score": float(item.get("score") or 0.0),
+                "text": item.get("text", ""),
+                "file_path": metadata.get("file_path"),
+                "section": metadata.get("section"),
+                "modality": metadata.get("modality", "text"),
+            })
+        return out
 
     def recall(self, query: str, filters: dict | None = None) -> list[Evidence]:
         payload = {

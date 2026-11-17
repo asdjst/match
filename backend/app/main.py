@@ -22,6 +22,7 @@ from adapters.vision.food import FakeFoodAnalyzer, VlmFoodAnalyzer
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.food import router as food_router
+from app.api.kb import router as kb_router
 from app.api.meals import router as meals_router
 from app.api.tasks import router as tasks_router
 from core.graph.builder import build_graph
@@ -131,6 +132,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.llm = llm
     app.state.retriever = retriever
+    # 维护页只读本地 R2R；fake 模式下没有真实库，接口统一回 503
+    app.state.kb = retriever.source("local") if settings.mode == "live" and hasattr(retriever, "source") else None
     # 未进入 lifespan（单测直连、脚本导入）时的事件内断点；服务启动后会被 SQLite saver 替换
     app.state.graph = build_graph(
         llm, retriever, tools,
@@ -168,6 +171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(food_router)
     app.include_router(tasks_router)
     app.include_router(meals_router)
+    app.include_router(kb_router)
     return app
 
 

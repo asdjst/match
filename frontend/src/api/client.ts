@@ -6,6 +6,8 @@ import type {
   Deliverable,
   FoodAnalysis,
   GlucoseReading,
+  KbOverview,
+  KbSearchResult,
   MealDraft,
   MealRecord,
   RunSummary,
@@ -286,6 +288,23 @@ export async function deleteGlucose(mealId: string, readingId: string): Promise<
     { method: "DELETE", headers: authHeaders() },
   );
   if (!resp.ok) throw await failure(resp, "删除血糖失败");
+}
+
+/** 知识库维护页只读；读失败必须抛出，避免把 R2R 故障显示成空库。 */
+export async function getKbOverview(): Promise<KbOverview> {
+  const resp = await fetch(`/api/kb/overview`, { headers: authHeaders({ accept: "application/json" }) });
+  if (!resp.ok) throw await failure(resp, "读取知识库状态失败");
+  return (await resp.json()) as KbOverview;
+}
+
+export async function searchKb(query: string, limit = 6): Promise<KbSearchResult> {
+  const resp = await fetch(`/api/kb/search`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ query, limit }),
+  });
+  if (!resp.ok) throw await failure(resp, "知识库召回失败");
+  return (await resp.json()) as KbSearchResult;
 }
 
 export const liveTransport: ChatTransport = {

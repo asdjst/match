@@ -22,6 +22,9 @@ class MultiSourceRetriever:
         self._timeout_s = timeout_s
         self.last_report: list[dict] = []
 
+    def source(self, name: str) -> object | None:
+        return self._sources.get(name)
+
     def recall(self, query: str, filters: dict | None = None) -> list[Evidence]:
         started = time.monotonic()
         report: dict[str, dict] = {}
