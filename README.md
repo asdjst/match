@@ -33,6 +33,14 @@
 | 可观测 | SSE 实时节点事件、每节点耗时与文字反馈、持久化任务快照、执行过程卡片回放；历史提问与运行轨迹同页可回放 |
 | 账号与多用户隔离 | 用户名 + 密码注册登录（scrypt 哈希、随机令牌），餐食/血糖/运行历史/会话记忆按 `user_id` 隔离，归属条件写在 SQL 里；不登录也能用，数据归单机演示身份 `local` |
 
+## 技术架构
+
+代码分三层：`app/` 是 FastAPI 入口、API 与装配；`core/` 放领域模型、LangGraph 图与节点、置信度、注入清洗、存储与账号；`adapters/` 只做协议翻译（模型路由、R2R / 联网 / 云盘检索、VLM、MCP 工具、护栏）。`core/` 不依赖第三方轮子，换模型或换检索后端不改业务代码。
+
+一次提问走 LangGraph 六角色：`planner → retriever → (executor | analyst) → analyst → critic`，审校不过打回分析员，轮数用尽在 writer 前挂起等人工放行；预算 8 步、3 轮、120 秒。检索是 R2R 混合检索（向量 + BM25 + RRF + 重排），证据分 local / web / cloud / memory 四通道，各通道独立超时；工具调用走 MCP stdio，入参由后端注入并写审计。
+
+交付走 SSE：阶段事件、成文增量、最终交付物分开推送，同时持久化运行快照供回放。业务数据落 SQLite（WAL）。前端 React 19 + TypeScript strict + Vite，图表为自绘 SVG，开发期 Vite 把 `/api` 代理到后端。
+
 ## 快速开始
 
 前置：Docker（R2R 栈）、Python 3.12+、Node 20+。
@@ -157,7 +165,7 @@ curl -s localhost:8000/api/meals -H 'authorization: Bearer <上一步返回的 t
 
 ```bash
 cd backend
-.venv/bin/python -m pytest -q            # 单测 + 集成，全离线，384 条
+.venv/bin/python -m pytest -q            # 单测 + 集成，全离线，417 条
 .venv/bin/python eval/golden.py          # 由知识卡标题重建金标 50 条（定位自动校验）
 .venv/bin/python eval/run_metrics.py     # Recall@5 / MRR（不花 LLM）
 .venv/bin/python eval/run_metrics.py --n 20  # + 关键来源命中 / 引用可解析 / 无源断言 / 成文率 / 库外拒答 / 直连大模型消融
@@ -167,7 +175,7 @@ cd backend
 
 金标 50 条 = 事实 30 + 对比 6 + 计算 8 + 库外负例 6，全部定位到 `demo_assets/gluco_knowledge` 的真实小标题；计算题在 CSV 的 `context` 列带个人血糖读数或代谢档案，工具入参由这里注入而不是让模型填数。拍照与语音通道由集成测试覆盖（需要真实上传），不进金标检索指标。
 
-最近一次实测（384 测试全过、Recall@5 0.9737、关键来源命中 1.00、成文率 1.00、库外拒答 3/3、直连 0.725 vs RAG 1.00）与各项口径见 [docs/metrics.md](docs/metrics.md)，结果文件在 `backend/eval/results/`。
+最近一次实测（417 测试全过、Recall@5 0.9737、关键来源命中 1.00、成文率 1.00、库外拒答 3/3、直连 0.725 vs RAG 1.00）与各项口径见 [docs/metrics.md](docs/metrics.md)，结果文件在 `backend/eval/results/`。
 
 ## 目录
 
