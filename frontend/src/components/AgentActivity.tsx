@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import { Button, Card, Stack, Text } from "@astryxdesign/core";
 import type { RunState } from "../store/runs";
 import type { GraphNodeName } from "../types";
-import { buildSteps, executionEntries, isGraphNode, RUNNING_HINT, STEP_LABEL } from "./ThinkingTimeline";
+import { buildSteps, executionEntries, isGraphNode, RUNNING_HINT, STEP_LABEL, stepLabel } from "./ThinkingTimeline";
 
 const NODE_CODE: Record<GraphNodeName, string> = {
   planner: "PLANNER", retriever: "RETRIEVER", executor: "EXECUTOR",
@@ -54,7 +54,7 @@ export function AgentFeedback({ run }: { run: RunState }) {
         {entries.map((entry, index) => <Stack as="li" key={entry.key} className="agent-feedback-row" direction="horizontal" gap={2}>
           <Text className="agent-feedback-index" size="2xs" hasTabularNumbers>{String(index + 1).padStart(2, "0")}</Text>
           <Stack gap={0} className="agent-feedback-copy">
-            <Text size="2xs" color="secondary">{STEP_LABEL[entry.node]}{entry.count > 1 ? ` · 第 ${entry.count} 次` : ""} · 已完成</Text>
+            <Text size="2xs" color="secondary">{stepLabel(entry.node)}{entry.count > 1 ? ` · 第 ${entry.count} 次` : ""} · 已完成</Text>
             <Text size="sm">{entry.summary ?? "这一步已处理完成。"}</Text>
           </Stack>
         </Stack>)}
@@ -165,7 +165,7 @@ export function ExecutionCard({ run, onClose, anchorRef }: {
               <Text className="execution-history-index" size="2xs" hasTabularNumbers>{String(index + 1).padStart(2, "0")}</Text>
               <Stack gap={1} className="execution-history-copy">
                 <Stack direction="horizontal" hAlign="between" gap={2}>
-                  <Text size="sm" weight="semibold">{STEP_LABEL[entry.node]}{entry.count > 1 ? ` · 第 ${entry.count} 次` : ""}</Text>
+                  <Text size="sm" weight="semibold">{stepLabel(entry.node)}{entry.count > 1 ? ` · 第 ${entry.count} 次` : ""}</Text>
                   {entry.durationMs > 0 ? <Text size="2xs" color="secondary" hasTabularNumbers>{(entry.durationMs / 1000).toFixed(1)}s</Text> : null}
                 </Stack>
                 <Text size="sm" color="secondary">{entry.summary ?? "这一步已处理完成。"}</Text>

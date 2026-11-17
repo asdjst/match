@@ -62,8 +62,45 @@ def test_embedding_cosine_path(tmp_path):
     c.embed = lambda text: [1.0, 0.0] if "米饭" in text else [0.0, 1.0]  # type: ignore[method-assign]
     c.store("alice", "fp1", "一碗米饭大概多少碳水？", D)
     row = c._conn.execute("SELECT vec FROM answer_cache").fetchone()
-    assert json.loads(row["vec"]) == [1.0, 0.0]
+    parsed = json.loads(row["vec"])
+    assert parsed["v"] == [1.0, 0.0] and parsed["m"] == c.embed_model
     # 改写但语义相近（同一向量）→ 余弦 1.0 命中
     assert c.lookup("alice", "fp1", "米饭的碳水含量大概是多少？") is not None
     # 完全不相关（正交向量）→ 余弦 0 不命中
     assert c.lookup("alice", "fp1", "明天上海天气如何") is None
+
+
+def test_cacheable_predicate():
+    from core.services.answer_cache import cacheable
+
+    assert cacheable({"answer": "x"})
+    assert not cacheable(None)
+    assert not cacheable({})
+    assert not cacheable({"refused": True})
+    assert not cacheable({"degraded": True, "refused": False})  # 降级兜底也不能缓存
+
+
+def test_fingerprint_day_change_invalidates(tmp_path):
+    c = make(tmp_path)
+    c.store("alice", AnswerCache.fingerprint(None, None, [], "m0", day="2026-11-12"), "一碗米饭大概多少碳水？", D)
+    base = AnswerCache.fingerprint(None, None, [], "m0", day="2026-11-12")
+    assert c.lookup("alice", base, "一碗米饭大概多少碳水？？？") is not None
+    # 跨天 → 失效（"今天…"类问题的答案随日期变化）
+    assert c.lookup("alice", AnswerCache.fingerprint(None, None, [], "m0", day="2026-11-13"), "一碗米饭大概多少碳水？") is None
+
+
+def test_cosine_dimension_mismatch_is_zero():
+    from core.services.answer_cache import _cosine
+
+    assert _cosine([1.0, 0.0], [1.0]) == 0.0
+    assert _cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
+
+
+def test_vec_model_mismatch_falls_back_to_text(tmp_path):
+    c = make(tmp_path)
+    c.embed = lambda text: [1.0, 0.0]  # type: ignore[method-assign]
+    c.store("alice", "fp1", "一碗米饭大概多少碳水？", D)
+    # 换了 embedding 模型：向量空间不同，回退文本相似度（同问题文本相似度 1.0 仍命中）
+    c.embed_model = "other-model"
+    assert c.lookup("alice", "fp1", "一碗米饭大概多少碳水？") is not None
+    assert c.lookup("alice", "fp1", "完全不相关的问题") is None

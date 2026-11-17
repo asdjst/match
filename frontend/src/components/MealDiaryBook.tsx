@@ -217,6 +217,7 @@ export default function MealDiaryBook({ open, onClose, meals, mealsError, onChan
           <MealDiary
             meals={meals}
             onEdit={setEditing}
+            onDayChange={() => setGlucoseFor(null)}
             onAddGlucose={(meal) => {
               setGlucoseFor(meal);
               setGlucoseValue("");

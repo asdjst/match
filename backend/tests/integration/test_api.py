@@ -455,3 +455,52 @@ def test_refused_answer_not_cached(cache_client):
     d = _deliverable(events)
     assert d["refused"] is True
     assert not d.get("from_cache")
+
+
+def test_time_relative_question_not_cached(cache_client):
+    for _ in range(2):
+        events = _chat(cache_client, "今天吃了什么？")
+        d = _deliverable(events)
+        assert not d.get("from_cache"), "含时间词的问题不应走缓存"
+        assert any(e["type"] == "node" and e["node"] == "writer" for e in events)
+
+
+def test_backref_question_not_cached(cache_client):
+    _chat(cache_client, FACTUAL_Q)
+    for _ in range(2):
+        events = _chat(cache_client, "那燕麦呢？")
+        d = _deliverable(events)
+        assert not d.get("from_cache"), "含指代词的追问不应走缓存（planner 会结合历史改写）"
+
+
+def test_cache_invalidated_when_meal_edited(cache_client):
+    _chat(cache_client, FACTUAL_Q)
+    resp = cache_client.post("/api/meals", json={
+        "eaten_at": "2026-11-08T12:30", "meal_type": "午餐",
+        "foods": [{"name": "米饭", "grams": 150, "carbs_g": 39}],
+    })
+    meal_id = resp.json()["meal"]["meal_id"]
+    cache_client.patch(f"/api/meals/{meal_id}", json={"note": "改了备注"})  # UPDATE 不变条数/rowid
+    events = _chat(cache_client, FACTUAL_Q)
+    d = _deliverable(events)
+    assert not d.get("from_cache"), "编辑餐食后缓存必须失效"
+
+
+def test_degraded_answer_not_cached(cache_client, monkeypatch):
+    from adapters.llm.fake import FakeLLM
+
+    real = FakeLLM.complete
+
+    def analyst_down(self, prompt, tier="fast", schema=None):
+        if prompt.role == "analyst":
+            raise ConnectionError("LLM 网关不可达")
+        return real(self, prompt, tier, schema)
+
+    monkeypatch.setattr(FakeLLM, "complete", analyst_down)
+    events = _chat(cache_client, FACTUAL_Q)
+    d = _deliverable(events)
+    assert d["degraded"] is True
+    monkeypatch.setattr(FakeLLM, "complete", real)
+    events2 = _chat(cache_client, FACTUAL_Q)
+    d2 = _deliverable(events2)
+    assert not d2.get("from_cache"), "降级兜底回答不能进缓存，否则故障会被固化"

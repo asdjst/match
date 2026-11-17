@@ -36,7 +36,15 @@ def _norm(text: str) -> str:
     return _NORM_RE.sub("", text).lower()
 
 
+def cacheable(deliverable: dict | None) -> bool:
+    """只有正常（未拒答、未降级）的交付物才允许进缓存。"""
+    return bool(deliverable) and not deliverable.get("refused") and not deliverable.get("degraded")
+
+
 def _cosine(a: list[float], b: list[float]) -> float:
+    # 换 embedding 模型后维度不同，前缀余弦无意义：长度不一致直接判不相似
+    if len(a) != len(b):
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     na = sum(x * x for x in a) ** 0.5
     nb = sum(x * x for x in b) ** 0.5
@@ -73,10 +81,10 @@ class AnswerCache:
             self._conn.executescript(_SCHEMA)
 
     @staticmethod
-    def fingerprint(profile, image_id, food_items, meals_fp: str) -> str:
-        """上下文指纹：档案/餐图/识别结果/餐食血糖概况任一变化都视为新上下文。"""
+    def fingerprint(profile, image_id, food_items, meals_fp: str, day: str = "") -> str:
+        """上下文指纹：档案/餐图/识别结果/餐食血糖概况/日期桶任一变化都视为新上下文。"""
         payload = json.dumps(
-            {"p": profile, "img": image_id, "foods": food_items, "m": meals_fp},
+            {"p": profile, "img": image_id, "foods": food_items, "m": meals_fp, "d": day},
             sort_keys=True, ensure_ascii=False, default=str,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -97,11 +105,20 @@ class AnswerCache:
             return None
 
     def _similar(self, q: str, qvec: list[float] | None, row) -> float:
+        vec = None
         if qvec is not None and row["vec"]:
             try:
-                return _cosine(qvec, json.loads(row["vec"]))
+                parsed = json.loads(row["vec"])
+                if isinstance(parsed, dict):
+                    # 存了模型名：模型不一致说明向量空间不同，回退文本相似度
+                    if parsed.get("m") == self.embed_model:
+                        vec = parsed.get("v")
+                elif isinstance(parsed, list):
+                    vec = parsed
             except Exception:
-                pass
+                vec = None
+        if qvec is not None and isinstance(vec, list):
+            return _cosine(qvec, vec)
         return SequenceMatcher(None, _norm(q), _norm(row["question"])).ratio()
 
     def lookup(self, user_id: str, fp: str, question: str) -> dict | None:
@@ -146,7 +163,7 @@ class AnswerCache:
                     user_id,
                     question,
                     fp,
-                    json.dumps(vec) if vec else None,
+                    json.dumps({"m": self.embed_model, "v": vec}) if vec else None,
                     json.dumps(deliverable, ensure_ascii=False),
                     datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 ),

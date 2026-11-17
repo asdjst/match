@@ -275,3 +275,16 @@ def test_migrate_adds_hot_columns_to_legacy_db(tmp_path):
     cols = {r["name"] for r in store._conn.execute("PRAGMA table_info(runs)")}
     assert {"user_id", "answer_snippet", "food_names"} <= cols
     store.close()
+
+
+def test_fingerprint_changes_on_meal_edit(tmp_path):
+    from core.services.store import MealStore
+
+    store = MealStore(tmp_path / "m.db")
+    meal = store.add_meal(user_id="u1", eaten_at="2026-11-08T12:30", meal_type="午餐",
+                          foods=[{"name": "米饭", "grams": 150, "carbs_g": 39}])
+    fp1 = store.fingerprint("u1")
+    store.update_meal(meal["meal_id"], {"note": "改了备注"}, user_id="u1")  # UPDATE 不变 rowid
+    fp2 = store.fingerprint("u1")
+    assert fp1 != fp2, "编辑餐食（UPDATE）必须改变指纹，否则回答缓存不会失效"
+    store.close()

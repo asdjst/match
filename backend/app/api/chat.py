@@ -26,6 +26,20 @@ log = logging.getLogger(__name__)
 
 # “这个/这餐”没有带新照片时，沿用本会话上一张餐盘的食物名做记录核对
 _BACKREF = re.compile(r"这个|这餐|这顿|这份|刚才|刚刚|上一|上个")
+# 含时间词或指代词的问题答案随日期/对话走，不进语义缓存（指纹里另有日期桶兜底）
+_CACHE_SKIP_RE = re.compile(
+    r"今天|今晚|今早|今晨|明早|明天|昨天|昨晚|前天|后天|本周|这周|上周|下周|最近|这几天|这两天|目前|当前|现在"
+    r"|这个|那个|这杯|这口|它|刚才|刚刚|上次|上回|然后|接着|再看|再问"
+)
+# 进程内 run 快照只保留最近 500 条，避免长时间演示内存只涨不降
+_RUNS_MEM_CAP = 500
+
+
+def _cap_runs(state) -> None:
+    runs = state.runs
+    if len(runs) > _RUNS_MEM_CAP:
+        for key in list(runs.keys())[:-_RUNS_MEM_CAP]:
+            runs.pop(key, None)
 
 
 class ChatRequest(BaseModel):
@@ -82,6 +96,7 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
                 "deliverable": deliverable.model_dump(),
                 "created_at": created_at,
             })
+            _cap_runs(state)
             persist(state.runs[run_id])
             state.tracer.event(trace_id, "guard", {"allowed": False, "reason": verdict.reason})
             yield _sse({"type": "guard", "allowed": False, "reason": verdict.reason})
@@ -94,6 +109,60 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
         # 拍照结果先校验再进证据池：非法项丢弃，避免脏 payload 影响后续引用
         food_items, food_pool = build_food_evidence(req.image_id, req.food_items)
         pool = dict(food_pool)
+        profile = req.profile.normalized() if req.profile else None
+        # 多轮上下文提前取：用于“这餐/上一餐”类指代，也喂给规划器消解指代
+        history = state.memory.history(memory_key, last=3)
+        if not history:
+            try:
+                history = state.store.history(req.session_id, last=3, user_id=user)
+            except Exception as exc:  # 历史读失败只影响指代消解，不阻塞问答
+                state.tracer.event(trace_id, "memory_error", {"error": str(exc)[:200]})
+        # 语义回答缓存：同一用户 + 上下文指纹未变 + 问题相似 → 直接回放上次交付物。
+        # 含时间词（今天/本周…）或指代词（这/那/上一…）的问题不走缓存：答案随时间和对话走，缓存会过期答案。
+        # 查缓存提到意图分类之前：命中时省掉一次大模型调用（实测 1.4–2.8s → 约 0.1s）
+        cache = getattr(state, "answer_cache", None)
+        cache_fp = None
+        cached = None
+        skip_cache = bool(_CACHE_SKIP_RE.search(question) or _BACKREF.search(question))
+        if cache is not None and not skip_cache:
+            try:
+                cache_fp = cache.fingerprint(
+                    profile, req.image_id, food_items, state.meals.fingerprint(user),
+                    day=time.strftime("%Y-%m-%d"),
+                )
+                cached = cache.lookup(user, cache_fp, question)
+            except Exception as exc:
+                state.tracer.event(trace_id, "cache_error", {"error": str(exc)[:160]})
+        if cached is not None:
+            deliverable = dict(cached)
+            deliverable["from_cache"] = True
+            node_ev = {
+                "type": "node", "node": "cache", "status": "done", "round_no": 0,
+                "at": epoch_ms(), "elapsed_ms": 0,
+                "summary": "命中语义缓存：问题与个人上下文均未变化，直接回放上次交付物。",
+            }
+            record = events.snapshot({
+                "session_id": req.session_id, "user_id": user, "question": question,
+                "round_no": 0, "node_results": {}, "deliverable": deliverable, "created_at": created_at,
+                "image_id": req.image_id, "food_items": food_items,
+            })
+            record["node_events"] = [node_ev]
+            record["timings"] = [{"node": "cache", "ms": 0, "round_no": 0, "at": node_ev["at"]}]
+            state.runs[run_id] = record
+            _cap_runs(state)
+            persist(record)
+            state.memory.append(memory_key, {
+                "question": question,
+                "answer": answer_snippet(deliverable),
+                "confidence": deliverable.get("confidence"),
+                "run_id": run_id,
+            })
+            state.tracer.event(trace_id, "cache_hit", {"question": question[:80]})
+            state.tracer.end(trace_id, {"from_cache": True, "confidence": deliverable.get("confidence")})
+            yield _sse(node_ev)
+            yield _sse({"type": "deliverable", "deliverable": deliverable})
+            yield _sse({"type": "done"})
+            return
         # 个人餐食记录作为独立证据通道：命中食物名或“上次”类提问时附带，失败不阻塞问答
         glucose_values: list[float] = []
         try:
@@ -116,52 +185,6 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
             glucose_values = recent_glucose_values(state.meals, user)
         except Exception as exc:
             state.tracer.event(trace_id, "memory_error", {"error": str(exc)[:200]})
-        profile = req.profile.normalized() if req.profile else None
-        # 语义回答缓存：同一用户 + 上下文指纹未变 + 问题相似 → 直接回放上次交付物
-        cache = getattr(state, "answer_cache", None)
-        cache_fp = None
-        cached = None
-        if cache is not None:
-            try:
-                cache_fp = cache.fingerprint(profile, req.image_id, food_items, state.meals.fingerprint(user))
-                cached = cache.lookup(user, cache_fp, question)
-            except Exception as exc:
-                state.tracer.event(trace_id, "cache_error", {"error": str(exc)[:160]})
-        if cached is not None:
-            deliverable = dict(cached)
-            deliverable["from_cache"] = True
-            node_ev = {
-                "type": "node", "node": "cache", "status": "done", "round_no": 0,
-                "at": epoch_ms(), "elapsed_ms": 0,
-                "summary": "命中语义缓存：问题与个人上下文均未变化，直接回放上次交付物。",
-            }
-            record = events.snapshot({
-                "session_id": req.session_id, "user_id": user, "question": question,
-                "round_no": 0, "node_results": {}, "deliverable": deliverable, "created_at": created_at,
-            })
-            record["node_events"] = [node_ev]
-            record["timings"] = [{"node": "cache", "ms": 0, "round_no": 0, "at": node_ev["at"]}]
-            state.runs[run_id] = record
-            persist(record)
-            state.memory.append(memory_key, {
-                "question": question,
-                "answer": answer_snippet(deliverable),
-                "confidence": deliverable.get("confidence"),
-                "run_id": run_id,
-            })
-            state.tracer.event(trace_id, "cache_hit", {"question": question[:80]})
-            state.tracer.end(trace_id, {"from_cache": True, "confidence": deliverable.get("confidence")})
-            yield _sse(node_ev)
-            yield _sse({"type": "deliverable", "deliverable": deliverable})
-            yield _sse({"type": "done"})
-            return
-        # 多轮上下文：优先进程内记忆，重启后由 SQLite 里的历史 run 回填
-        history = state.memory.history(memory_key, last=3)
-        if not history:
-            try:
-                history = state.store.history(req.session_id, last=3, user_id=user)
-            except Exception as exc:  # 历史读失败只影响指代消解，不阻塞问答
-                state.tracer.event(trace_id, "memory_error", {"error": str(exc)[:200]})
         init: GraphState = {
             "session_id": req.session_id,
             "question": question,
@@ -202,6 +225,7 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
                     event = events.custom(chunk)
                     if event is not None:
                         state.runs[run_id] = events.snapshot(merged)
+                        _cap_runs(state)
                         yield _sse(event)
                     continue
                 if "__interrupt__" in chunk:
@@ -216,11 +240,13 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
                     event = events.done(node)
                     # Only actual updates enter completion history; interrupted/failed nodes do not.
                     state.runs[run_id] = events.snapshot(merged)
+                    _cap_runs(state)
                     state.tracer.event(trace_id, f"node:{node}", {"status": "done"})
                     yield _sse(event)
         except GraphRecursionError:
             merged["error"] = "超过图循环上限"
             state.runs[run_id] = events.snapshot(merged)
+            _cap_runs(state)
             yield _sse({"type": "error", "message": merged["error"]})
             state.tracer.event(trace_id, "error", {"message": "超过图循环上限"})
         except Exception as e:
@@ -236,6 +262,7 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
         merged = events.snapshot(merged)
         if interrupted:
             state.runs[run_id] = merged
+            _cap_runs(state)
             persist(merged)
             remember(merged)
             state.tracer.event(trace_id, "needs_human", merged.get("human_gate"))
@@ -245,10 +272,13 @@ async def chat(req: ChatRequest, request: Request, user: str = Depends(current_u
         if merged.get("deliverable"):
             yield _sse({"type": "deliverable", "deliverable": merged["deliverable"]})
         state.runs[run_id] = merged
+        _cap_runs(state)
         persist(merged)
         remember(merged)
-        # 只缓存未拒答的正常交付物：拒答/降级不进缓存，避免把一次性状态固化
-        if cache is not None and cache_fp and merged.get("deliverable") and not merged["deliverable"].get("refused"):
+        # 只缓存正常交付物：一次网络抖动产生的降级兜底结论不能固化进缓存
+        from core.services.answer_cache import cacheable
+
+        if cache is not None and cache_fp and not skip_cache and cacheable(merged.get("deliverable")):
             try:
                 cache.store(user, cache_fp, question, merged["deliverable"])
             except Exception as exc:

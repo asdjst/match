@@ -29,10 +29,20 @@ export function isGraphNode(node: string): node is GraphNodeName {
   return GRAPH_NODES.some((name) => name === node);
 }
 
+/** 执行步骤节点：六个智能体角色 + 语义缓存命中（cache 命中时也要作为一步展示） */
+export function isStepNode(node: string): boolean {
+  return isGraphNode(node) || node === "cache";
+}
+
+/** 步骤显示名：cache 节点没有进 GRAPH_NODES（避免影响六段进度条），单独兜底 */
+export function stepLabel(node: string): string {
+  return (STEP_LABEL as Record<string, string>)[node] ?? (node === "cache" ? "语义缓存" : node);
+}
+
 export function executionEntries(run: RunState) {
   if (run.nodeEvents.length) {
     const counts = new Map<string, number>();
-    return run.nodeEvents.filter((event) => event.status === "done" && isGraphNode(event.node)).map((event, i) => {
+    return run.nodeEvents.filter((event) => event.status === "done" && isStepNode(event.node)).map((event, i) => {
       const count = (counts.get(event.node) ?? 0) + 1;
       counts.set(event.node, count);
       return { ...event, node: event.node as GraphNodeName, key: `${run.key}-${i}`, count };

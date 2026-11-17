@@ -2,7 +2,7 @@
  * 饮食日记：一页一天，按日期翻页。
  * 复用餐食列表的条目样式；页眉是日期 + 当天小统计（几餐 / 碳水合计 / 血糖最高最低）。
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { formatEatenAt } from "./MealLogDialog";
 import type { MealRecord, MealType } from "../types";
 
@@ -63,9 +63,11 @@ export interface MealDiaryProps {
   onDelete?: (meal: MealRecord) => void;
   /** 补血糖表单等额外内容，渲染在当天条目下方 */
   footer?: ReactNode;
+  /** 翻页后回调当天日期 key：父组件借此清掉挂在旧页面上的表单，避免跨天残留 */
+  onDayChange?: (dayKey: string) => void;
 }
 
-export function MealDiary({ meals, onEdit, onAddGlucose, onDelete, footer }: MealDiaryProps) {
+export function MealDiary({ meals, onEdit, onAddGlucose, onDelete, footer, onDayChange }: MealDiaryProps) {
   const [page, setPage] = useState(0);
 
   const days = useMemo(() => {
@@ -84,8 +86,14 @@ export function MealDiary({ meals, onEdit, onAddGlucose, onDelete, footer }: Mea
       }));
   }, [meals]);
 
+  // 翻页时通知父组件当前日期变化（用于清理只属于某一天的表单）；hook 必须在提前 return 之前
+  const safe = Math.min(page, Math.max(days.length - 1, 0));
+  const dayKeyCurrent = days.length ? days[safe].key : "";
+  useEffect(() => {
+    if (dayKeyCurrent) onDayChange?.(dayKeyCurrent);
+  }, [dayKeyCurrent, onDayChange]);
+
   if (days.length === 0) return null;
-  const safe = Math.min(page, days.length - 1);
   const day = days[safe];
   const dayCarbs = Math.round(day.meals.reduce((s, m) => s + mealCarbs(m), 0) * 10) / 10;
   const readings = day.meals.flatMap((m) => m.readings);

@@ -362,7 +362,8 @@ class MealStore:
         if not fields:
             return self.get_meal(meal_id, user_id)
         fields.append("updated_at=?")
-        values += [_now(), meal_id, user_id]
+        # 指纹只看 updated_at，同一秒内的连续编辑必须能区分开
+        values += [datetime.now(timezone.utc).isoformat(timespec="microseconds"), meal_id, user_id]
         action = "UPDATE meal_logs SET " + ", ".join(fields) + " WHERE meal_id=? AND user_id=?"
         with self._lock:
             cur = self._conn.execute(action, tuple(values))
@@ -438,17 +439,21 @@ class MealStore:
         }
 
     def fingerprint(self, user_id: str = "local") -> str:
-        """该用户餐食/血糖数据的廉价指纹：条数 + 最大 rowid，任一变化即视为数据已变。"""
+        """该用户餐食/血糖数据的廉价指纹：条数 + 最大 rowid + 最新修改时间。
+
+        编辑走 UPDATE 不变 rowid，所以必须带 updated_at，否则改完碳水缓存不会失效。
+        """
         with self._lock:
-            mc, mr = self._conn.execute(
-                "SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM meal_logs WHERE user_id=?", (user_id,)
+            mc, mr, mu = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(rowid),0), COALESCE(MAX(updated_at),'') FROM meal_logs WHERE user_id=?",
+                (user_id,),
             ).fetchone()
-            gc, gr = self._conn.execute(
-                "SELECT COUNT(*), COALESCE(MAX(g.rowid),0) FROM glucose_readings g "
+            gc, gr, gt = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(g.rowid),0), COALESCE(MAX(g.created_at),'') FROM glucose_readings g "
                 "JOIN meal_logs m ON g.meal_id=m.meal_id WHERE m.user_id=?",
                 (user_id,),
             ).fetchone()
-        return f"{mc}:{mr}:{gc}:{gr}"
+        return f"{mc}:{mr}:{mu}:{gc}:{gr}:{gt}"
 
     def close(self) -> None:
         with self._lock:

@@ -4417,6 +4417,18 @@ body,
     0 4px 10px var(--paper-shadow);
 }
 
+/* 窄屏（手机）：日记本改为底部抽屉，避免盖住输入框；内联拖拽位置用 !important 覆盖 */
+@media (max-width: 640px) {
+  .diary-book {
+    left: 8px !important;
+    right: 8px !important;
+    top: auto !important;
+    bottom: 8px !important;
+    width: auto;
+    height: min(68vh, 560px);
+  }
+}
+
 .diary-book-head {
   flex: none;
   display: flex;
